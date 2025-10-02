@@ -1,16 +1,16 @@
-<!--
+```
 ████████████████████████████████████████████████████████████████████████████████████████████████████████████████
 █─▄▄▄▄█▄─▄▄─█▄─██─▄█─▄▄─█▄─▄███▄─▄▄─█─▄▄─█▄─▄▄─█▄─▄▄─█▄─▄▄▀█▄─▄█─▄▄─█▄─▄▄▀█▄─█─▄█▄─▄▄─█▄─▀─▄█▄─▄▄─█▄─▄▄─█▄─▄███
 █─██▄─██─▄█▀██─██─██─██─██─██▀██─▄█▀█─██─██─▄█▀██─▄█▀██─██─██─██─██─██─▄─▄██─▄▀███─▄█▀██─█─███─▄█▀█─██─██─██▀██
 █▄▄▄▄▄█▄▄▄▄▄█▄▄▄▄██▄▄▄▄██▄▄▄▄▄█▄▄▄▄▄█▄▄▄▄█▄▄▄▄▄█▄▄▄▄▄█▄▄▄▄▀█▄▄▄█▄▄▄▄█▄▄▀▄▄█▄▄█▄▄█▄▄▄▄▄█▄▄█▄▄█▄▄▄▄▄█▄▄▄▄▄█▄▄▄▄▄█
--->
+```
 
 <p align="center">
-  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=40&pause=1200&color=FF1744&center=true&width=1000&lines=YT+%26+Spotify+Downloader+%F0%9F%8E%AC;The+Last+Downloader+You+Will+Ever+Need;Modern+UI+%7C+AI+Powered+%7C+Open+Source;Download+Anything.+Anytime.+Anywhere."/>
+  <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=30&pause=1200&color=FF1744&center=true&width=1000&lines=YT+%26+Spotify+Downloader+%F0%9F%8E%AC;The+Last+Downloader+You+Will+Ever+Need;Modern+UI+%7C+AI+Powered+%7C+Open+Source;Download+Anything.+Anytime.+Anywhere."/>
 </p>
 
 <p align="center">
-  <img src="https://svgshare.com/i/16pM.svg" width="900">
+  <img src="https://media.tenor.com/Lu3ZB5FTDdwAAAAi/duong2.gif" width="900">
 </p>
 
 <p align="center">
@@ -24,7 +24,7 @@
 ---
 
 <p align="center">
-  <img src="https://tenor.com/view/blue-emoji-shush-mewing-gif-5213080002189044391">
+  <img src="https://media1.tenor.com/m/5hCo-bxm3mUAAAAC/gojo-gojo-annoyed.gif">
 </p>
 
 ---
@@ -54,11 +54,11 @@
 ## 🖥️ **Screenshots (Interactive & Animated)**
 
 <p align="center">
-  <img src="https://postimg.cc/wySYY9PS" alt="Main UI Dark" width="700"><br>
-  <img src="https://postimg.cc/McNFvdDM" alt="Main UI Light" width="700"><br>
+  <img src="https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-02%20213937.png" alt="Main UI Dark" width="700"><br>
+  <img src="https://raw.githubusercontent.com/rohitt99/yt-downloader/main/screenshots/Screenshot%20(1).png" alt="Main UI Light" width="700"><br>
   </p>
 
-| ![Playlist UI](https://raw.githubusercontent.com/alexx993/yt-spotify-downloader/main/screenshots/playlist_ui.png) | ![Subtitles](https://raw.githubusercontent.com/alexx993/yt-spotify-downloader/main/screenshots/subtitle_ui.png) | ![History](https://raw.githubusercontent.com/alexx993/yt-spotify-downloader/main/screenshots/history_ui.png) |
+| ![Playlist UI](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-02%20214009.png) | ![Subtitles](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-02%20214215.png) | ![History](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-02%20214040.png) |
 |:---:|:---:|:---:|
 | **Playlist Selection** | **Subtitle Picker** | **Download History** |
 
@@ -72,7 +72,7 @@ pip install -U yt-dlp spotdl PyQt5
 python Uidownload.py
 ```
 <p align="center">
-  <img src="https://svgshare.com/i/16nA.svg" height="60">
+  <img src="https://media.tenor.com/6aELBXsW158AAAAi/yanorele-pat.gif" height="60">
 </p>
 
 ---
@@ -128,9 +128,9 @@ _Stuck behind a region lock?_
 ## 🛠️ **Contribute, Meme, Star**
 
 - **Star this repo** if you love it! ⭐  
-- [Open issues](https://github.com/alexx993/yt-spotify-downloader/issues) for bugs or requests  
+- [Open issues](https://github.com/rohitt99/yt-downloader/issues) for bugs or requests  
 - PRs, memes, and feature ideas **welcome**  
-- DM **Alexx993** with feedback, memes, or feature requests
+- DM **ROHIT** with feedback, memes, or feature requests
 
 ---
 
