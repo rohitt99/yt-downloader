@@ -23,11 +23,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alexx993/yt-spotify-downloader"><img src="https://img.shields.io/github/stars/alexx993/yt-spotify-downloader?style=for-the-badge&color=ff1744"></a>
+  <a href="https://github.com/rohitt99/yt-downloader"><img src="https://img.shields.io/github/stars/rohitt99/yt-downloader?style=for-the-badge&color=ff1744"></a>
   <img src="https://img.shields.io/badge/Modern_UI-Glassmorphism-009688?style=for-the-badge&logo=qt">
   <img src="https://img.shields.io/badge/AI-Powered-blueviolet?style=for-the-badge&logo=python">
   <img src="https://img.shields.io/badge/No_Ads-No_Spyware-critical?style=for-the-badge&logo=github">
-  <img src="https://img.shields.io/github/license/alexx993/yt-spotify-downloader?style=for-the-badge&color=23243a">
+  <img src="https://img.shields.io/github/license/rohitt99/yt-downloader?style=for-the-badge&color=23243a">
 </p>
 
 ---
