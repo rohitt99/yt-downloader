@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <img src="https://media.tenor.com/Lu3ZB5FTDdwAAAAi/duong2.gif" width="500">
+  <img src="https://media.tenor.com/Lu3ZB5FTDdwAAAAi/duong2.gif" width="300">
 </p>
 
 <p align="center">
