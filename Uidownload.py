@@ -319,7 +319,7 @@ class DownloadThread(QThread):
 
             # --- yt-dlp block ---
             outtmpl = os.path.join(self.folder, "%(title)s.%(ext)s")
-            fmt_str = f"{self.format_id}+bestaudio" if self.stream_type == "[video only]" else self.format_id
+            fmt_str = f"{self.format_id}+bestaudio[ext=m4a]/bestaudio" if self.stream_type == "[video only]" else self.format_id
             extra_args = []
             is_video = self.stream_type in ("[video+audio]", "[video only]")
             if is_video and self.thumbnail_url:
