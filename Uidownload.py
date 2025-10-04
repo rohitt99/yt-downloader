@@ -319,7 +319,7 @@ class DownloadThread(QThread):
 
             # --- yt-dlp block ---
             outtmpl = os.path.join(self.folder, "%(title)s.%(ext)s")
-            fmt_str = f"{self.format_id}+bestaudio[ext=m4a]/bestaudio" if self.stream_type == "[video only]" else self.format_id
+            fmt_str = self.format_id
             extra_args = []
             is_video = self.stream_type in ("[video+audio]", "[video only]")
             if is_video and self.thumbnail_url:
@@ -445,6 +445,14 @@ class DownloadThread(QThread):
                             captcha_error2 = False
                             for line in process2.stdout:
                                 all_output2 += line
+                                # ADD THIS NEW BLOCK to find the final merged file
+                                merge_match = re.search(r'\[Merger\] Merging formats into "(.+)"', line)
+                                if merge_match:
+                                    filename = merge_match.group(1).strip() # This is the final, correct path
+                                    if filename not in download_files:
+                                        download_files.append(filename)
+                
+                                # Playlist video progress detection
                                 pl_match = re.search(r'\[download\] Downloading video (\d+) of (\d+)', line)
                                 if pl_match:
                                     current_video = int(pl_match.group(1))
@@ -570,26 +578,30 @@ class DownloadThread(QThread):
                     entries.append(entry)
                 self.finished.emit("Download complete!", first_file, {"playlist": True, "entries": entries})
                 return
-            if not filename:
-                files = [os.path.join(self.folder, f) for f in os.listdir(self.folder) if os.path.isfile(os.path.join(self.folder, f))]
-                if not files:
-                    self.error.emit("No file found in download folder after yt-dlp run.\nOutput:\n" + all_output)
-                    return
-                filename = max(files, key=os.path.getctime)
-            if not os.path.exists(filename):
-                self.error.emit(f"Download reported complete, but file not found.\nOutput:\n{all_output}")
-                return
-            entry = {
-                "title": self.title,
-                "url": self.url,
-                "filepath": filename,
-                "type": "YouTube",
-                "format": self.stream_type,
-                "datetime": datetime.datetime.now().isoformat(),
-                "thumbnail": self.thumbnail_url
-            }
-            save_history(entry)
-            self.finished.emit("Download complete!", filename, entry)
+            # --- NEW ROBUST FILE FINDING LOGIC for single files ---
+            # This is more reliable because it just finds the newest file instead of parsing the log.
+            try:
+                # List all files in the download folder
+                all_files = [os.path.join(self.folder, f) for f in os.listdir(self.folder) if os.path.isfile(os.path.join(self.folder, f))]
+                if not all_files:
+                    raise FileNotFoundError("Download finished, but no files were found in the destination folder.")
+
+                # Find the most recently modified file. This is our downloaded video.
+                filename = max(all_files, key=os.path.getmtime)
+
+                entry = {
+                    "title": self.title,
+                    "url": self.url,
+                    "filepath": filename,
+                    "type": "YouTube",
+                    "format": self.stream_type,
+                    "datetime": datetime.datetime.now().isoformat(),
+                    "thumbnail": self.thumbnail_url
+                }
+                save_history(entry)
+                self.finished.emit("Download complete!", filename, entry)
+            except Exception as e:
+                self.error.emit(f"Error finding downloaded file: {e}\nOutput:\n{all_output}")
         except Exception as e:
             import traceback
             self.error.emit(f"Download error: {e}\n{traceback.format_exc()}")
@@ -2093,16 +2105,49 @@ class YTDownloader(QWidget):
         if not url or not self.current_formats:
             QMessageBox.warning(self, "No quality selected", "Please fetch qualities and select one!")
             return
+        # Replace It With This New Block
         fmtid, stream_type = self.quality_box.currentData()
+
+        # --- THIS IS THE NEW, SMART LOGIC ---
+        # It determines the correct format string for ALL cases.
+        final_fmt_str = ""
+        if self.playlist_mode in ("playlist", "range", "single"):
+            # --- PLAYLIST CASE ---
+            # For playlists, create a generic format string based on selected resolution.
+            selected_text = self.quality_box.currentText()
+            match = re.search(r'(\d{3,4})p', selected_text)
+            if match and stream_type != "[audio only]":
+                height = match.group(1)
+                final_fmt_str = f"bestvideo[height<={height}]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio"
+            elif stream_type != "[audio only]":
+            # Fallback for playlists if resolution isn't in the label
+                final_fmt_str = "bestvideo+bestaudio/best"
+            else:
+        # For audio-only playlists, the original format ID is fine
+                final_fmt_str = fmtid
+        else:
+            # --- SINGLE VIDEO CASE ---
+            # For single videos, use the specific format ID the user selected.
+            if stream_type == "[video only]":
+                # If it's video-only, we must add the audio part.
+                final_fmt_str = f"{fmtid}+bestaudio[ext=m4a]/bestaudio"
+            else:
+                # If it already has audio, just use the ID.
+                final_fmt_str = fmtid
+
         self.progress.setValue(0)
         self.status.setText("Starting download...")
         self.download_btn.setEnabled(False)
         self.fetch_btn.setEnabled(False)
         self.url_input.setEnabled(False)  # Disable URL input during download
+
+# Now, we need to pass the new 'final_fmt_str' to the thread
+# Find the line that starts with 'self.thread = DownloadThread(...)'
+# and change 'fmtid' to 'final_fmt_str'. # Disable URL input during download
         # Proxy is now system-wide, no need to pass to yt-dlp/spotdl
         try:
             self.thread = DownloadThread(
-                url, self.folder, fmtid, stream_type, self.fetched_title, self.fetched_thumbnail,
+                url, self.folder, final_fmt_str, stream_type, self.fetched_title, self.fetched_thumbnail,
                 embed_subs=self.embed_subs, subtitle_langs=self.selected_subtitle_langs,
                 playlist_range=self.playlist_range,
                 playlist_mode=self.playlist_mode,
