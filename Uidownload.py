@@ -400,11 +400,11 @@ class DownloadThread(QThread):
             last_reported_video = -1
             download_files = []
             captcha_error = False
-            for line in process.stdout:
+            for line in iter(process.stdout.readline, ''):
                 all_output += line
                 # Playlist video progress detection
                 pl_match = re.search(r'\[download\] Downloading video (\d+) of (\d+)', line)
-                if pl_match:
+                if pl_match and self.playlist_mode in ("playlist", "range"):
                     current_video = int(pl_match.group(1))
                     total_videos = int(pl_match.group(2))
                     last_reported_video = current_video
@@ -443,7 +443,7 @@ class DownloadThread(QThread):
                             last_reported_video = -1
                             download_files = []
                             captcha_error2 = False
-                            for line in process2.stdout:
+                            for line in iter(process2.stdout.readline, ''):
                                 all_output2 += line
                                 # ADD THIS NEW BLOCK to find the final merged file
                                 merge_match = re.search(r'\[Merger\] Merging formats into "(.+)"', line)
@@ -454,7 +454,7 @@ class DownloadThread(QThread):
                 
                                 # Playlist video progress detection
                                 pl_match = re.search(r'\[download\] Downloading video (\d+) of (\d+)', line)
-                                if pl_match:
+                                if pl_match and self.playlist_mode in ("playlist", "range"):
                                     current_video = int(pl_match.group(1))
                                     total_videos = int(pl_match.group(2))
                                     last_reported_video = current_video
@@ -2118,10 +2118,10 @@ class YTDownloader(QWidget):
             match = re.search(r'(\d{3,4})p', selected_text)
             if match and stream_type != "[audio only]":
                 height = match.group(1)
-                final_fmt_str = f"bestvideo[height<={height}]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio"
+                final_fmt_str = f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio"
             elif stream_type != "[audio only]":
             # Fallback for playlists if resolution isn't in the label
-                final_fmt_str = "bestvideo+bestaudio/best"
+                final_fmt_str = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
             else:
         # For audio-only playlists, the original format ID is fine
                 final_fmt_str = fmtid
@@ -2129,7 +2129,7 @@ class YTDownloader(QWidget):
             # --- SINGLE VIDEO CASE ---
             # For single videos, use the specific format ID the user selected.
             if stream_type == "[video only]":
-                # If it's video-only, we must add the audio part.
+                # If it's video-only, we must add the best audio part, preferring m4a.
                 final_fmt_str = f"{fmtid}+bestaudio[ext=m4a]/bestaudio"
             else:
                 # If it already has audio, just use the ID.
