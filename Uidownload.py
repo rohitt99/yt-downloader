@@ -1,14 +1,25 @@
 import sys, os, subprocess, json, urllib.request, webbrowser, datetime, re
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QGraphicsDropShadowEffect,
+    QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout,
     QMessageBox, QFileDialog, QHBoxLayout, QProgressBar, QComboBox, QFrame, QSizePolicy,
     QDialog, QListWidget, QListWidgetItem, QAbstractItemView, QTextEdit, QCheckBox, QSpinBox,
     QScrollArea, QDialogButtonBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QUrl
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QUrl, QCoreApplication
 from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QKeySequence
 from PyQt5.QtGui import QDesktopServices 
 from PyQt5.QtWidgets import QShortcut, QGraphicsDropShadowEffect
+
+# --- Global constants ---
+APP_TITLE = "YT & Spotify Downloader"
+APP_COPYRIGHT = "© 2025 ROHIT"
+APP_VERSION = "v1.2" # The current version of the application.
+
+try:
+    from packaging import version as packaging_version
+except ImportError:
+    print("Required 'packaging' library not found. Please run: pip install packaging")
+    sys.exit(1)
 
 def get_browser_cookies(browser_name):
     """
@@ -61,11 +72,6 @@ class BrowserSelectDialog(QDialog):
     def select_browser(self, name):
         self.browser = name
         self.accept()
-
-# --- Global constants ---
-APP_TITLE = "YT & Spotify Downloader"
-APP_COPYRIGHT = "© 2024 Alexx993"
-APP_VERSION = "v1.2" # Example: New features added
 
 def get_app_data_dir():
     """Returns the platform-specific, persistent application data directory."""
@@ -1245,7 +1251,7 @@ class UpdateCheckerThread(QThread):
     A worker thread that checks for application updates on GitHub in the background.
     Emits a signal with the update information if a new version is found.
     """
-    update_available = pyqtSignal(str, str, str, str) # current_ver, new_ver, changelog, url
+    update_available = pyqtSignal(str, str, str, str, str) # current_ver, new_ver, changelog, url, download_url
     error = pyqtSignal(str)
 
     def __init__(self, current_version, version_url, parent=None):
@@ -1263,16 +1269,17 @@ class UpdateCheckerThread(QThread):
             latest_version_str = data.get("version", "0.0").lstrip('v')
             changelog = data.get("changelog", "No details provided.")
             github_url = data.get("url", "")
+            download_url = data.get("download_url", "") # The direct download link for the new executable
 
             # Numerically compare versions (e.g., "1.10" > "1.9")
-            current_parts = list(map(int, self.current_version_str.split('.')))
-            latest_parts = list(map(int, latest_version_str.split('.')))
+            current_version = packaging_version.parse(self.current_version_str)
+            latest_version = packaging_version.parse(latest_version_str)
 
-            if latest_parts > current_parts:
-                self.update_available.emit(self.current_version_str, latest_version_str, changelog, github_url)
+            if latest_version > current_version:
+                self.update_available.emit(self.current_version_str, latest_version_str, changelog, github_url, download_url)
 
         except urllib.error.URLError as e:
-            self.error.emit(f"Could not check for updates (network error): {e.reason}")
+            self.error.emit(f"Network error: {e.reason}")
         except Exception as e:
             self.error.emit(f"An error occurred while checking for updates: {e}")
 
@@ -1281,9 +1288,10 @@ class UpdateDialog(QDialog):
     """
     A polished, custom dialog to notify the user about a new update.
     """
-    def __init__(self, current_version, new_version, changelog, github_url, parent=None):
+    def __init__(self, current_version, new_version, changelog, github_url, download_url, parent=None):
         super().__init__(parent)
         self.github_url = github_url
+        self.download_url = download_url
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setModal(True)
@@ -1291,6 +1299,9 @@ class UpdateDialog(QDialog):
         self.setup_ui(current_version, new_version, changelog)
 
     def setup_ui(self, current_version, new_version, changelog):
+        # --- Download Progress Thread ---
+        self.download_thread = None
+
         # Main container with shadow and rounded corners
         self.container = QFrame(self)
         self.container.setObjectName("container")
@@ -1346,25 +1357,33 @@ class UpdateDialog(QDialog):
         """)
         main_layout.addWidget(changelog_text)
 
+        # --- Update Progress Bar (initially hidden) ---
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setStyleSheet("QProgressBar { height: 8px; border-radius: 4px; background: #444; } QProgressBar::chunk { border-radius: 4px; background: #00e5ff; }")
+        self.progress_bar.hide()
+        main_layout.addWidget(self.progress_bar)
+
+
         # --- Buttons ---
         button_layout = QHBoxLayout()
         button_layout.addStretch()
 
-        later_btn = QPushButton("Later")
-        later_btn.setCursor(Qt.PointingHandCursor)
-        later_btn.setStyleSheet("""
+        self.later_btn = QPushButton("Later")
+        self.later_btn.setCursor(Qt.PointingHandCursor)
+        self.later_btn.setStyleSheet("""
             QPushButton {
                 background: #353541; color: #fff; font-size: 14px;
                 padding: 10px 25px; border-radius: 12px; border: 1px solid #555;
             }
             QPushButton:hover { background: #4a4a58; }
         """)
-        later_btn.clicked.connect(self.reject)
-        button_layout.addWidget(later_btn)
+        self.later_btn.clicked.connect(self.reject)
+        button_layout.addWidget(self.later_btn)
 
-        update_btn = QPushButton("Update Now")
-        update_btn.setCursor(Qt.PointingHandCursor)
-        update_btn.setStyleSheet("""
+        self.update_btn = QPushButton("Update & Restart")
+        self.update_btn.setCursor(Qt.PointingHandCursor)
+        self.update_btn.setStyleSheet("""
             QPushButton {
                 background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,
                     stop:0 #00e5ff, stop:1 #1d8fe1);
@@ -1373,8 +1392,8 @@ class UpdateDialog(QDialog):
             }
             QPushButton:hover { background: #1d8fe1; }
         """)
-        update_btn.clicked.connect(self.accept_update)
-        button_layout.addWidget(update_btn)
+        self.update_btn.clicked.connect(self.accept_update)
+        button_layout.addWidget(self.update_btn)
         main_layout.addLayout(button_layout)
 
         # Set the main layout for the dialog
@@ -1383,9 +1402,105 @@ class UpdateDialog(QDialog):
         self.setLayout(dialog_layout)
 
     def accept_update(self):
-        """Opens the GitHub URL and closes the dialog."""
-        QDesktopServices.openUrl(QUrl(self.github_url))
-        self.accept()
+        """Starts the automatic update process."""
+        if not self.download_url:
+            # Fallback to opening the GitHub page if no direct download URL is provided
+            QDesktopServices.openUrl(QUrl(self.github_url))
+            self.accept()
+            return
+
+        self.update_btn.setEnabled(False)
+        self.later_btn.setEnabled(False)
+        self.update_btn.setText("Updating...")
+        self.progress_bar.show()
+        self.progress_bar.setRange(0, 0) # Indeterminate progress
+
+        self.download_thread = UpdateDownloaderThread(self.download_url)
+        self.download_thread.finished.connect(self.on_update_downloaded)
+        self.download_thread.error.connect(self.on_update_error)
+        self.download_thread.start()
+
+    def on_update_downloaded(self, new_file_path):
+        """Called when the new executable is downloaded. Creates and runs the updater script."""
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(100)
+        self.update_btn.setText("Restarting...")
+
+        try:
+            current_app_path = QCoreApplication.applicationFilePath()
+            if not current_app_path.lower().endswith('.exe'):
+                # This logic is primarily for packaged .exe files.
+                # For scripts, a simple restart isn't safe.
+                QMessageBox.information(self, "Update Ready", f"Update downloaded to:\n{new_file_path}\nPlease replace the old version and restart manually.")
+                self.accept()
+                return
+
+            if sys.platform == "win32":
+                updater_content = f"""
+@echo off
+echo Waiting for application to close...
+timeout /t 3 /nobreak > nul
+echo Replacing application file...
+del "{current_app_path}"
+move "{new_file_path}" "{current_app_path}"
+echo Relaunching application...
+start "" "{current_app_path}"
+echo Cleaning up...
+del "%~f0"
+"""
+                updater_path = os.path.join(os.path.dirname(current_app_path), "updater.bat")
+                with open(updater_path, "w") as f:
+                    f.write(updater_content)
+                
+                # Launch the updater script detached from the current process
+                subprocess.Popen(f'"{updater_path}"', shell=True, creationflags=subprocess.DETACHED_PROCESS)
+                
+                # Close the main application
+                QCoreApplication.quit()
+
+            else: # macOS / Linux (basic handling)
+                QMessageBox.information(self, "Update Ready", f"Update downloaded to:\n{new_file_path}\nPlease replace the old version and restart.")
+                self.accept()
+
+        except Exception as e:
+            self.on_update_error(f"Failed to apply update: {e}")
+
+    def on_update_error(self, error_message):
+        QMessageBox.critical(self, "Update Failed", f"Could not download the update:\n{error_message}")
+        self.update_btn.setEnabled(True)
+        self.later_btn.setEnabled(True)
+        self.update_btn.setText("Update & Restart")
+        self.progress_bar.hide()
+
+
+class UpdateDownloaderThread(QThread):
+    """A simple thread to download a file from a URL."""
+    finished = pyqtSignal(str) # Emits the path of the downloaded file
+    error = pyqtSignal(str)
+
+    def __init__(self, url, parent=None):
+        super().__init__(parent)
+        self.url = url
+
+    def run(self):
+        try:
+            import tempfile
+            # Download to a temporary file
+            response = urllib.request.urlopen(self.url)
+            # Create a temporary file with the correct extension
+            original_filename = os.path.basename(urllib.parse.urlparse(self.url).path)
+            suffix = os.path.splitext(original_filename)[1]
+            
+            # Use NamedTemporaryFile to get a path, but manage deletion manually
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+            temp_file_path = temp_file.name
+            
+            with temp_file as f:
+                f.write(response.read())
+            
+            self.finished.emit(temp_file_path)
+        except Exception as e:
+            self.error.emit(str(e))
 
 
 class YTDownloader(QWidget):
@@ -1843,9 +1958,9 @@ class YTDownloader(QWidget):
         self.update_thread.finished.connect(lambda: self.status.setText("Ready."))
         self.update_thread.start()
 
-    def show_update_dialog(self, current_ver, new_ver, changelog, url):
+    def show_update_dialog(self, current_ver, new_ver, changelog, url, download_url):
         """Displays the custom update dialog."""
-        dialog = UpdateDialog(current_ver, new_ver, changelog, url, self)
+        dialog = UpdateDialog(current_ver, new_ver, changelog, url, download_url, self)
         dialog.exec_()
 
 
@@ -2394,7 +2509,6 @@ class YTDownloader(QWidget):
                 border: 2.2px solid #ff8a65;
             }
             QPushButton#clear:hover, QPushButton#paste:hover {
-                background: #23243a
                 background: #23243a;
             }
             QPushButton#history {
@@ -2579,19 +2693,15 @@ class YTDownloader(QWidget):
         self.channel_label.setText(f"{channel}" if channel else "")
         self.duration_label.setText(f"{duration}" if duration else "")
         self.fetch_btn.setEnabled(True)
+
         if thumbnail_url:
-            try:
-                img_data = urllib.request.urlopen(thumbnail_url).read()
-                pix = QPixmap()
-                pix.loadFromData(img_data)
-                width = max(220, int(self.width() * 0.28))
-                height = max(120, int(self.height() * 0.33))
-                self.thumbnail_label.setPixmap(pix.scaled(
-                    width, height, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            except Exception:
-                self.thumbnail_label.setText("No thumbnail")
+            # Use a thread to load the thumbnail without freezing the UI
+            self.thumbnail_loader_thread = ThumbnailLoaderThread(thumbnail_url, -1) # -1 index means it's for the main display
+            self.thumbnail_loader_thread.finished.connect(self.on_main_thumbnail_loaded)
+            self.thumbnail_loader_thread.start()
         else:
             self.thumbnail_label.setText("No thumbnail")
+
         self.available_subtitles = lang_list
         if lang_list:
             self.subtitle_label.setText(f"✓ Subtitles available ({len(lang_list)}): {', '.join(l for l, _ in lang_list[:3])}" + 
@@ -2625,6 +2735,16 @@ class YTDownloader(QWidget):
             self.playlist_mode = None
             self.playlist_range = None
     # Removed warning about thumbnail embedding support for mp4/mkv formats
+
+    def on_main_thumbnail_loaded(self, pixmap, index):
+        """Slot to update the main thumbnail display once it's loaded."""
+        if index == -1 and not pixmap.isNull():
+            width = max(220, int(self.width() * 0.28))
+            height = max(120, int(self.height() * 0.33))
+            self.thumbnail_label.setPixmap(pixmap.scaled(
+                width, height, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        elif pixmap.isNull():
+            self.thumbnail_label.setText("No thumbnail")
 
     def fetch_error(self, err):
         self.status.setText("Fetch error.")
@@ -2886,6 +3006,11 @@ class YTDownloader(QWidget):
 
 
 if __name__ == '__main__':
+    try:
+        from packaging import version
+    except ImportError:
+        print("Required 'packaging' library not found. Please run: pip install packaging")
+        sys.exit(1)
     try:
         import yt_dlp
     except ImportError:
