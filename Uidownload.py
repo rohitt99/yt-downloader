@@ -1,6 +1,6 @@
 import sys, os, subprocess, json, urllib.request, webbrowser, datetime, re
 from PyQt5.QtWidgets import (
-    QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout,
+    QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QGraphicsDropShadowEffect,
     QMessageBox, QFileDialog, QHBoxLayout, QProgressBar, QComboBox, QFrame, QSizePolicy,
     QDialog, QListWidget, QListWidgetItem, QAbstractItemView, QTextEdit, QCheckBox, QSpinBox,
     QScrollArea, QDialogButtonBox
@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QUrl
 from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QKeySequence
 from PyQt5.QtGui import QDesktopServices 
-from PyQt5.QtWidgets import QShortcut
+from PyQt5.QtWidgets import QShortcut, QGraphicsDropShadowEffect
 
 def get_browser_cookies(browser_name):
     """
@@ -65,7 +65,7 @@ class BrowserSelectDialog(QDialog):
 # --- Global constants ---
 APP_TITLE = "YT & Spotify Downloader"
 APP_COPYRIGHT = "© 2024 Alexx993"
-APP_VERSION = "v1.1" # Version bump for new feature
+APP_VERSION = "v1.2" # Example: New features added
 
 def get_app_data_dir():
     """Returns the platform-specific, persistent application data directory."""
@@ -406,6 +406,7 @@ class FetchFormatsThread(QThread):
 class DownloadThread(QThread):
     progress = pyqtSignal(int, str)
     finished = pyqtSignal(str, str, dict)
+    cancelled = pyqtSignal()
     error = pyqtSignal(str)
 
     def __init__(self, url, folder, format_id, stream_type, title, thumbnail_url,
@@ -425,13 +426,22 @@ class DownloadThread(QThread):
         self.force_aac = force_aac
         self.proxy = proxy
         self.use_vpn = use_vpn
+        self._is_cancelled = False
+        self.process = None
+        self.partial_files = set()
+
+    def cancel(self):
+        """Signals the thread to cancel the download."""
+        self._is_cancelled = True
+        if self.process:
+            self.process.terminate()
 
     def run(self):
         start_time = datetime.datetime.now()
         try:
-            # Connect VPN if requested (dummy implementation, replace with actual VPN logic)
             if self.use_vpn:
                 print("[INFO] VPN connection requested. Please connect your VPN manually or implement auto-connect here.")
+
             if is_spotify_url(self.url):
                 outtmpl = os.path.join(self.folder, "{artist} - {title}.{ext}")
                 cmd = [
@@ -440,12 +450,16 @@ class DownloadThread(QThread):
                 ]
                 if self.proxy:
                     cmd += ["--proxy", self.proxy]
-                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
                 percent = 0
                 filename = None
                 all_output = ""
-                for line in process.stdout:
+                for line in self.process.stdout:
                     all_output += line
+                    if self._is_cancelled:
+                        break
+
+                    # Find partial files for cleanup
                     if "%" in line:
                         match = re.search(r'(\d{1,3}\.\d+)%', line)
                         if match:
@@ -454,11 +468,20 @@ class DownloadThread(QThread):
                     if "Downloaded:" in line or "Saved:" in line:
                         part = line.split(":")[-1].strip()
                         if part and os.path.exists(part):
-                            filename = part
-                process.wait()
-                if process.returncode != 0:
+                            self.partial_files.add(part)
+                            filename = part # Keep track of the latest potential file
+
+                self.process.wait()
+
+                if self._is_cancelled:
+                    self.cleanup_partial_files()
+                    self.cancelled.emit()
+                    return
+
+                if self.process.returncode != 0:
                     self.error.emit("spotdl failed:\n" + all_output)
                     return
+
                 if not filename:
                     files = [os.path.join(self.folder, f) for f in os.listdir(self.folder) if f.lower().endswith(('.mp3', '.m4a', '.ogg', '.flac')) and os.path.isfile(os.path.join(self.folder, f))]
                     if not files:
@@ -466,6 +489,7 @@ class DownloadThread(QThread):
                         return
                     filename = max(files, key=os.path.getctime)
                 end_time = datetime.datetime.now()
+
                 duration = end_time - start_time
                 entry = {
                     "title": self.title,
@@ -478,7 +502,6 @@ class DownloadThread(QThread):
                     "thumbnail": self.thumbnail_url
                 }
                 save_history(entry)
-                # Send Telegram notification
                 send_telegram_notification(entry)
                 self.finished.emit("Download complete!", filename, entry)
                 return
@@ -557,16 +580,19 @@ class DownloadThread(QThread):
                         msg += f" | Time left: {eta}"
                 return percent, msg
 
-            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+            self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             percent = 0
             filename = None
             all_output = ""
             current_video = 1
             total_videos = playlist_count
             last_reported_video = -1
-            download_files = []
+            self.partial_files = set() # Reset for this run
             captcha_error = False
-            for line in iter(process.stdout.readline, ''):
+            for line in iter(self.process.stdout.readline, ''):
+                if self._is_cancelled:
+                    break
+
                 all_output += line
                 # Playlist video progress detection
                 pl_match = re.search(r'\[download\] Downloading video (\d+) of (\d+)', line)
@@ -583,13 +609,24 @@ class DownloadThread(QThread):
                 elif "Destination:" in line:
                     part = line.split("Destination:")[-1].strip()
                     if part:
-                        filename = os.path.join(self.folder, os.path.basename(part))
-                        download_files.append(filename)
+                        self.partial_files.add(os.path.join(self.folder, os.path.basename(part)))
+                elif "[Merger] Merging formats into" in line:
+                    # This is the final file after merging, it's the most important one to track.
+                    merge_match = re.search(r'\[Merger\] Merging formats into "(.+)"', line)
+                    if merge_match:
+                        self.partial_files.add(merge_match.group(1).strip())
+
                 # Detect captcha/robot error
                 if "confirm you are not a robot" in line.lower() or "captcha" in line.lower():
                     captcha_error = True
-            process.wait()
-            if process.returncode != 0:
+            self.process.wait()
+
+            if self._is_cancelled:
+                self.cleanup_partial_files()
+                self.cancelled.emit()
+                return
+
+            if self.process.returncode != 0:
                 # If captcha error, prompt for browser cookies
                 if captcha_error:
                     from PyQt5.QtWidgets import QApplication
@@ -600,24 +637,25 @@ class DownloadThread(QThread):
                             self.progress.emit(0, f"Using cookies from {dlg.browser}...")
                             cookies_file = get_browser_cookies(dlg.browser)
                             cmd_cookies = cmd + ["--cookies", cookies_file]
-                            process2 = subprocess.Popen(cmd_cookies, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                            self.process = subprocess.Popen(cmd_cookies, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
                             percent = 0
                             filename = None
                             all_output2 = ""
                             current_video = 1
                             total_videos = playlist_count
                             last_reported_video = -1
-                            download_files = []
+                            self.partial_files = set()
                             captcha_error2 = False
-                            for line in iter(process2.stdout.readline, ''):
+                            for line in iter(self.process.stdout.readline, ''):
+                                if self._is_cancelled:
+                                    break
+
                                 all_output2 += line
                                 # ADD THIS NEW BLOCK to find the final merged file
                                 merge_match = re.search(r'\[Merger\] Merging formats into "(.+)"', line)
                                 if merge_match:
                                     filename = merge_match.group(1).strip() # This is the final, correct path
-                                    if filename not in download_files:
-                                        download_files.append(filename)
-                
+                                    self.partial_files.add(filename)
                                 # Playlist video progress detection
                                 pl_match = re.search(r'\[download\] Downloading video (\d+) of (\d+)', line)
                                 if pl_match and self.playlist_mode in ("playlist", "range"):
@@ -632,16 +670,23 @@ class DownloadThread(QThread):
                                 elif "Destination:" in line:
                                     part = line.split("Destination:")[-1].strip()
                                     if part:
-                                        filename = os.path.join(self.folder, os.path.basename(part))
-                                        download_files.append(filename)
+                                        self.partial_files.add(os.path.join(self.folder, os.path.basename(part)))
+
                                 if "confirm you are not a robot" in line.lower() or "captcha" in line.lower():
                                     captcha_error2 = True
-                            process2.wait()
-                            if process2.returncode != 0:
+                            self.process.wait()
+
+                            if self._is_cancelled:
+                                self.cleanup_partial_files()
+                                self.cancelled.emit()
+                                return
+
+                            if self.process.returncode != 0:
                                 self.error.emit(f"yt-dlp failed (with cookies):\n{all_output2}")
                                 return
                             # Determine file(s) downloaded for history
                             entries = []
+                            download_files = list(self.partial_files)
                             if self.playlist_mode in ("playlist", "range", "single"):
                                 for file in download_files:
                                     if os.path.exists(file):
@@ -727,7 +772,7 @@ class DownloadThread(QThread):
             # --- success, handle history/playlist ---
             entries = []
             if self.playlist_mode in ("playlist", "range", "single"):
-                for file in download_files:
+                for file in self.partial_files:
                     if os.path.exists(file):
                         # For playlists, duration should be per-file. We'll use total time as an approximation.
                         end_time_playlist = datetime.datetime.now()
@@ -804,6 +849,17 @@ class DownloadThread(QThread):
         except Exception as e:
             import traceback
             self.error.emit(f"Download error: {e}\n{traceback.format_exc()}")
+
+    def cleanup_partial_files(self):
+        """Deletes all files tracked during the download process."""
+        print(f"[Cancel] Cleaning up {len(self.partial_files)} partial file(s)...")
+        for f_path in self.partial_files:
+            try:
+                if os.path.exists(f_path):
+                    os.remove(f_path)
+                    print(f"[Cancel] Deleted: {f_path}")
+            except Exception as e:
+                print(f"[Cancel] Error deleting {f_path}: {e}")
 
 class PlaylistDialog(QDialog):
     def __init__(self, playlist_entries, parent=None):
@@ -987,12 +1043,26 @@ class HistoryDialog(QDialog):
             QListWidget {background: #20232a; color: #fff; font-size: 15px; border-radius: 10px;}
             QPushButton {background: #009688; color:#fff; border-radius: 8px; font-size: 13px; padding: 6px 18px;}
             QPushButton#clear {background: #ff1744;}
+            QLineEdit {
+                border-radius: 8px; border: 1px solid #444; background: #20232a;
+                color: #fff; padding: 8px; font-size: 14px;
+            }
         """)
         vbox = QVBoxLayout(self)
+
+        # --- Search Bar ---
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("🔍 Search by title, type, or date...")
+        self.search_input.textChanged.connect(self.filter_history)
+        vbox.addWidget(self.search_input)
+
+        # --- History List ---
         self.list = QListWidget()
         self.list.setSelectionMode(QAbstractItemView.SingleSelection)
         self.list.setIconSize(QSize(80, 45)) # Standard 16:9 aspect ratio
         vbox.addWidget(self.list)
+
+        # --- Action Buttons ---
         btns = QHBoxLayout()
         self.open_btn = QPushButton("Open File")
         self.openf_btn = QPushButton("Open Folder")
@@ -1005,6 +1075,8 @@ class HistoryDialog(QDialog):
         btns.addStretch(1)
         btns.addWidget(self.clear_btn)
         vbox.addLayout(btns)
+
+        # --- Details View ---
         self.details = QTextEdit()
         self.details.setReadOnly(True)
         self.details.setStyleSheet("background:#20232a;color:#ffeb3b;font-size:13px;border-radius:8px;")
@@ -1015,6 +1087,15 @@ class HistoryDialog(QDialog):
         self.openf_btn.clicked.connect(self.open_folder)
         self.copy_btn.clicked.connect(self.copy_path)
         self.clear_btn.clicked.connect(self.clear_all)
+
+    def filter_history(self):
+        """Hides or shows history items based on the search query."""
+        query = self.search_input.text().lower()
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            # The item's text already contains title, type, and date
+            item_text = item.text().lower()
+            item.setHidden(query not in item_text)
 
     def load_history(self):
         self.list.clear()
@@ -1156,6 +1237,155 @@ class TelegramSettingsDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+# Place this with your other class definitions, e.g., after TelegramSettingsDialog
+
+class UpdateCheckerThread(QThread):
+    """
+    A worker thread that checks for application updates on GitHub in the background.
+    Emits a signal with the update information if a new version is found.
+    """
+    update_available = pyqtSignal(str, str, str, str) # current_ver, new_ver, changelog, url
+    error = pyqtSignal(str)
+
+    def __init__(self, current_version, version_url, parent=None):
+        super().__init__(parent)
+        self.current_version_str = current_version.lstrip('v')
+        self.version_url = version_url
+
+    def run(self):
+        """Fetches the version.json file and compares versions."""
+        try:
+            # Fetch the version data from GitHub
+            with urllib.request.urlopen(self.version_url, timeout=5) as response:
+                data = json.loads(response.read().decode('utf-8'))
+
+            latest_version_str = data.get("version", "0.0").lstrip('v')
+            changelog = data.get("changelog", "No details provided.")
+            github_url = data.get("url", "")
+
+            # Numerically compare versions (e.g., "1.10" > "1.9")
+            current_parts = list(map(int, self.current_version_str.split('.')))
+            latest_parts = list(map(int, latest_version_str.split('.')))
+
+            if latest_parts > current_parts:
+                self.update_available.emit(self.current_version_str, latest_version_str, changelog, github_url)
+
+        except urllib.error.URLError as e:
+            self.error.emit(f"Could not check for updates (network error): {e.reason}")
+        except Exception as e:
+            self.error.emit(f"An error occurred while checking for updates: {e}")
+
+
+class UpdateDialog(QDialog):
+    """
+    A polished, custom dialog to notify the user about a new update.
+    """
+    def __init__(self, current_version, new_version, changelog, github_url, parent=None):
+        super().__init__(parent)
+        self.github_url = github_url
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Dialog)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setModal(True)
+
+        self.setup_ui(current_version, new_version, changelog)
+
+    def setup_ui(self, current_version, new_version, changelog):
+        # Main container with shadow and rounded corners
+        self.container = QFrame(self)
+        self.container.setObjectName("container")
+        self.container.setStyleSheet("""
+            #container {
+                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1,
+                    stop:0 rgba(45, 49, 66, 240), stop:1 rgba(24, 24, 36, 240));
+                border-radius: 20px;
+                border: 1px solid #444;
+            }
+        """)
+        main_layout = QVBoxLayout(self.container)
+        main_layout.setContentsMargins(25, 25, 25, 25)
+        main_layout.setSpacing(15)
+
+        # --- Title and Icon ---
+        title_layout = QHBoxLayout()
+        icon_label = QLabel("🚀")
+        icon_label.setFont(QFont("Segoe UI Emoji", 30))
+        title_label = QLabel("New Update Available!")
+        title_label.setFont(QFont("Segoe UI", 20, QFont.Bold))
+        title_label.setStyleSheet("color: #fff;")
+        title_layout.addWidget(icon_label)
+        title_layout.addWidget(title_label)
+        title_layout.addStretch()
+        main_layout.addLayout(title_layout)
+
+        # --- Version Info ---
+        version_info = QLabel(f"You are on version <b>{current_version}</b>. Version <b>{new_version}</b> is now available.")
+        version_info.setFont(QFont("Segoe UI", 12))
+        version_info.setStyleSheet("color: #ccc;")
+        version_info.setWordWrap(True)
+        main_layout.addWidget(version_info)
+
+        # --- Changelog ---
+        changelog_header = QLabel("What's New:")
+        changelog_header.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        changelog_header.setStyleSheet("color: #00e5ff;")
+        main_layout.addWidget(changelog_header)
+
+        changelog_text = QTextEdit()
+        changelog_text.setReadOnly(True)
+        changelog_text.setText(changelog.replace('\n', '<br>')) # Allow basic HTML
+        changelog_text.setStyleSheet("""
+            QTextEdit {
+                background: rgba(0,0,0,0.2);
+                border: 1px solid #444;
+                color: #f0f0f0;
+                font-size: 13px;
+                border-radius: 8px;
+                padding: 10px;
+            }
+        """)
+        main_layout.addWidget(changelog_text)
+
+        # --- Buttons ---
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        later_btn = QPushButton("Later")
+        later_btn.setCursor(Qt.PointingHandCursor)
+        later_btn.setStyleSheet("""
+            QPushButton {
+                background: #353541; color: #fff; font-size: 14px;
+                padding: 10px 25px; border-radius: 12px; border: 1px solid #555;
+            }
+            QPushButton:hover { background: #4a4a58; }
+        """)
+        later_btn.clicked.connect(self.reject)
+        button_layout.addWidget(later_btn)
+
+        update_btn = QPushButton("Update Now")
+        update_btn.setCursor(Qt.PointingHandCursor)
+        update_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #00e5ff, stop:1 #1d8fe1);
+                color: #fff; font-size: 14px; font-weight: bold;
+                padding: 10px 25px; border-radius: 12px; border: none;
+            }
+            QPushButton:hover { background: #1d8fe1; }
+        """)
+        update_btn.clicked.connect(self.accept_update)
+        button_layout.addWidget(update_btn)
+        main_layout.addLayout(button_layout)
+
+        # Set the main layout for the dialog
+        dialog_layout = QVBoxLayout(self)
+        dialog_layout.addWidget(self.container)
+        self.setLayout(dialog_layout)
+
+    def accept_update(self):
+        """Opens the GitHub URL and closes the dialog."""
+        QDesktopServices.openUrl(QUrl(self.github_url))
+        self.accept()
 
 
 class YTDownloader(QWidget):
@@ -1338,7 +1568,21 @@ class YTDownloader(QWidget):
         self.download_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.download_btn.clicked.connect(self.start_download)
         self.download_btn.setEnabled(False)
-        left_layout.addWidget(self.download_btn)
+
+        # Cancel button (initially hidden)
+        self.cancel_btn = QPushButton("Cancel Download")
+        self.cancel_btn.setCursor(Qt.PointingHandCursor)
+        self.cancel_btn.setFont(QFont("Segoe UI", 17, QFont.Bold))
+        self.cancel_btn.setStyleSheet("background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #c62828, stop:1 #e57373); color: white;")
+        self.cancel_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.cancel_btn.clicked.connect(self.cancel_download)
+        self.cancel_btn.hide()
+
+        # Layout to hold and swap Download/Cancel buttons
+        self.download_button_layout = QHBoxLayout()
+        self.download_button_layout.addWidget(self.download_btn)
+        self.download_button_layout.addWidget(self.cancel_btn)
+        left_layout.addLayout(self.download_button_layout)
 
         # Progress bar
         self.progress = QProgressBar()
@@ -1366,9 +1610,15 @@ class YTDownloader(QWidget):
         self.help_btn.setCursor(Qt.PointingHandCursor)
         self.help_btn.setObjectName("clear")
         self.help_btn.clicked.connect(self.show_about)
+        self.update_btn = QPushButton("🔄")
+        self.update_btn.setToolTip("Check for Updates")
+        self.update_btn.setCursor(Qt.PointingHandCursor)
+        self.update_btn.setObjectName("clear")
+        self.update_btn.clicked.connect(self.check_for_updates)
         about_row.addWidget(QLabel(f"{APP_COPYRIGHT}  {APP_VERSION}"))
         about_row.addStretch(1)
         about_row.addWidget(self.mode_btn)
+        about_row.addWidget(self.update_btn)
         about_row.addWidget(self.help_btn)
         left_layout.addLayout(about_row)
         left_layout.addStretch(1)
@@ -1576,8 +1826,28 @@ class YTDownloader(QWidget):
         QShortcut(QKeySequence("Ctrl+Return"), self).activated.connect(self.fetch_qualities)
         QShortcut(QKeySequence("Ctrl+D"), self).activated.connect(self.start_download)
         
+        # --- Auto-Update Check on Startup ---
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(2000, self.check_for_updates) # Check 2 seconds after launch
+
         self.auto_focus()
         self.show()
+
+    def check_for_updates(self):
+        """Initiates the background check for a new version."""
+        self.status.setText("Checking for updates...")
+        version_url = "https://raw.githubusercontent.com/rohitt99/yt-downloader/main/version.json"
+        self.update_thread = UpdateCheckerThread(APP_VERSION, version_url)
+        self.update_thread.update_available.connect(self.show_update_dialog)
+        self.update_thread.error.connect(lambda msg: self.status.setText(f"Update check failed: {msg}"))
+        self.update_thread.finished.connect(lambda: self.status.setText("Ready."))
+        self.update_thread.start()
+
+    def show_update_dialog(self, current_ver, new_ver, changelog, url):
+        """Displays the custom update dialog."""
+        dialog = UpdateDialog(current_ver, new_ver, changelog, url, self)
+        dialog.exec_()
+
 
     def on_proxy_checkbox_changed(self, state):
         try:
@@ -2462,10 +2732,11 @@ class YTDownloader(QWidget):
 
         self.progress.setValue(0)
         self.status.setText("Starting download...")
+        self.cancel_btn.show()
         self.download_btn.setEnabled(False)
+        self.download_btn.hide()
         self.fetch_btn.setEnabled(False)
         self.url_input.setEnabled(False)  # Disable URL input during download
-
 # Now, we need to pass the new 'final_fmt_str' to the thread
 # Find the line that starts with 'self.thread = DownloadThread(...)'
 # and change 'fmtid' to 'final_fmt_str'. # Disable URL input during download
@@ -2484,12 +2755,25 @@ class YTDownloader(QWidget):
             self.thread.progress.connect(self.update_progress)
             self.thread.finished.connect(self.download_finished)
             self.thread.error.connect(self.download_error)
+            self.thread.cancelled.connect(self.download_cancelled)
             self.thread.start()
         except Exception as e:
             QMessageBox.critical(self, "Thread Error", f"Failed to start download thread:\n{e}")
-            self.download_btn.setEnabled(True)
-            self.fetch_btn.setEnabled(True)
+            self.reset_ui_after_download()
 
+    def cancel_download(self):
+        if hasattr(self, 'thread') and self.thread.isRunning():
+            reply = QMessageBox.question(self, "Cancel Download", "Are you sure you want to cancel the current download?", QMessageBox.Yes | QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self.status.setText("Cancelling...")
+                self.thread.cancel()
+
+    def reset_ui_after_download(self):
+        self.download_btn.setEnabled(True)
+        self.download_btn.show()
+        self.fetch_btn.setEnabled(True)
+        self.url_input.setEnabled(True)
+        self.cancel_btn.hide()
     def update_progress(self, pct, msg):
         if pct == 0:
             self.progress.setMaximum(0)
@@ -2502,9 +2786,7 @@ class YTDownloader(QWidget):
         self.status.setText(msg)
         self.progress.setMaximum(100)
         self.progress.setValue(100)
-        self.download_btn.setEnabled(True)
-        self.fetch_btn.setEnabled(True)
-        self.url_input.setEnabled(True)  # Re-enable URL input
+        self.reset_ui_after_download()
         if isinstance(history_entry, dict) and history_entry.get("playlist"):
             entries = history_entry["entries"]
             file_count = len(entries)
@@ -2526,9 +2808,13 @@ class YTDownloader(QWidget):
 
     def download_error(self, err):
         self.status.setText("Error.")
-        self.download_btn.setEnabled(True)
-        self.fetch_btn.setEnabled(True)
+        self.reset_ui_after_download()
         QMessageBox.critical(self, "Error", str(err))
+
+    def download_cancelled(self):
+        self.status.setText("Download cancelled by user.")
+        self.progress.setValue(0)
+        self.reset_ui_after_download()
 
     def clear_all(self):
         self.url_input.clear()
