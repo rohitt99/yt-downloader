@@ -67,7 +67,7 @@
   <img src="https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-16%20215547.png" alt="Main UI Light" width="700"><br>
   </p>
 
-| ![Playlist UI](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-02%20214009.png) | ![Subtitles](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-16%20220332.png) | ![History](https://github.com/raw.rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-16%20220841.png) |
+| ![Playlist UI](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-02%20214009.png) | ![Subtitles](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-16%20220332.png) | ![History](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-16%20220841.png) |
 |:---:|:---:|:---:|
 | **Playlist Selection** | **Subtitle Picker** | **Download History** |
 
