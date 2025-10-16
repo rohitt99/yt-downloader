@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QDialog, QListWidget, QListWidgetItem, QAbstractItemView, QTextEdit, QCheckBox, QSpinBox,
     QScrollArea, QDialogButtonBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QUrl, QCoreApplication
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QUrl, QCoreApplication, QPropertyAnimation, QRect
 from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QKeySequence
 from PyQt5.QtGui import QDesktopServices 
 from PyQt5.QtWidgets import QShortcut, QGraphicsDropShadowEffect
@@ -20,6 +20,16 @@ try:
 except ImportError:
     print("Required 'packaging' library not found. Please run: pip install packaging")
     sys.exit(1)
+
+try:
+    import matplotlib
+    matplotlib.use('Qt5Agg') # Set the backend for PyQt5
+    from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+    from matplotlib.figure import Figure
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    print("Matplotlib not found, analytics dashboard will be disabled. Run: pip install matplotlib")
+    MATPLOTLIB_AVAILABLE = False
 
 def get_browser_cookies(browser_name):
     """
@@ -1074,11 +1084,14 @@ class HistoryDialog(QDialog):
         self.openf_btn = QPushButton("Open Folder")
         self.copy_btn = QPushButton("Copy Path")
         self.clear_btn = QPushButton("Clear History")
+        self.analytics_btn = QPushButton("📊 Analytics")
+        self.analytics_btn.setToolTip("Show Download Analytics")
         self.clear_btn.setObjectName("clear")
         btns.addWidget(self.open_btn)
         btns.addWidget(self.openf_btn)
         btns.addWidget(self.copy_btn)
         btns.addStretch(1)
+        btns.addWidget(self.analytics_btn)
         btns.addWidget(self.clear_btn)
         vbox.addLayout(btns)
 
@@ -1093,6 +1106,7 @@ class HistoryDialog(QDialog):
         self.openf_btn.clicked.connect(self.open_folder)
         self.copy_btn.clicked.connect(self.copy_path)
         self.clear_btn.clicked.connect(self.clear_all)
+        self.analytics_btn.clicked.connect(self.show_analytics)
 
     def filter_history(self):
         """Hides or shows history items based on the search query."""
@@ -1187,6 +1201,15 @@ class HistoryDialog(QDialog):
             self.load_history()
             self.details.setPlainText("")
 
+    def show_analytics(self):
+        """Shows the analytics dashboard dialog."""
+        if not MATPLOTLIB_AVAILABLE:
+            QMessageBox.warning(self, "Feature Disabled", "The analytics dashboard requires the 'matplotlib' library.\nPlease install it by running: pip install matplotlib")
+            return
+        # Pass the already loaded history data to the dialog for efficiency
+        dlg = AnalyticsDialog(self.entries, self)
+        dlg.exec_()
+
 class ThumbnailLoaderThread(QThread):
     """A thread to load a thumbnail image from a URL without blocking the UI."""
     finished = pyqtSignal(QPixmap, int)
@@ -1244,6 +1267,167 @@ class TelegramSettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+class AnalyticsDialog(QDialog):
+    """A professional, god-level dialog to display download analytics with multiple charts."""
+    def __init__(self, history_data, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Download Analytics Dashboard")
+        self.setMinimumSize(900, 700)
+        self.setStyleSheet("""
+            QDialog { background-color: #23243a; }
+            QLabel { color: #fff; font-size: 14px; }
+            QLabel#title { font-size: 28px; font-weight: bold; color: #00e5ff; padding-bottom: 10px; }
+            QFrame#stat_box { background: #20232a; border-radius: 12px; }
+        """)
+
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(20, 20, 20, 20)
+        self.layout.setSpacing(15)
+
+        title_label = QLabel("📊 Download Analytics")
+        title_label.setObjectName("title")
+        title_label.setAlignment(Qt.AlignCenter)
+        self.layout.addWidget(title_label)
+
+        # --- Analytics Calculation ---
+        if not history_data:
+            self.layout.addWidget(QLabel("No download history available to generate analytics.", alignment=Qt.AlignCenter))
+            return
+
+        total_downloads = 0
+        source_counts = {}
+        format_counts = {}
+        downloads_by_month = {}
+        total_size = 0
+        first_download_date = None
+
+        all_items = []
+        for entry in history_data:
+            if isinstance(entry, dict) and "entries" in entry and entry.get("playlist"):
+                all_items.extend(entry["entries"])
+            else:
+                all_items.append(entry)
+
+        for entry in all_items:
+            try:
+                total_downloads += 1
+                source = entry.get('type', 'Unknown')
+                source_counts[source] = source_counts.get(source, 0) + 1
+                
+                fmt = os.path.splitext(entry.get('filepath', ''))[1].lower().replace('.', '') or 'N/A'
+                format_counts[fmt] = format_counts.get(fmt, 0) + 1
+
+                filepath = entry.get('filepath')
+                if filepath and os.path.exists(filepath):
+                    total_size += os.path.getsize(filepath)
+
+                dt_iso = entry.get('datetime')
+                if dt_iso:
+                    dt_obj = datetime.datetime.fromisoformat(dt_iso)
+                    if first_download_date is None or dt_obj < first_download_date:
+                        first_download_date = dt_obj
+                    month_key = dt_obj.strftime('%Y-%m') # e.g., "2024-05"
+                    downloads_by_month[month_key] = downloads_by_month.get(month_key, 0) + 1
+            except Exception:
+                continue # Skip corrupted entries
+
+        # --- Prepare Data for Display ---
+        avg_size_str = human_size(total_size / total_downloads) if total_downloads > 0 else "0 B"
+        total_size_str = human_size(total_size)
+        first_download_str = first_download_date.strftime('%b %d, %Y') if first_download_date else "N/A"
+        most_common_format = max(format_counts, key=format_counts.get) if format_counts else "N/A"
+
+        # --- Summary Stats ---
+        stats_layout = QHBoxLayout()
+        stats_layout.setSpacing(15)
+        stats_layout.addWidget(self.create_stat_label("Total Downloads", str(total_downloads)))
+        stats_layout.addWidget(self.create_stat_label("Total Size", total_size_str))
+        stats_layout.addWidget(self.create_stat_label("Average File Size", avg_size_str))
+        stats_layout.addWidget(self.create_stat_label("First Download", first_download_str))
+        self.layout.addLayout(stats_layout)
+
+        # --- Charts ---
+        if MATPLOTLIB_AVAILABLE:
+            charts_layout = QHBoxLayout()
+            
+            # Chart 1: Downloads by Source (Bar Chart)
+            sorted_sources = sorted(source_counts.items(), key=lambda item: item[1], reverse=True)[:5]
+            source_labels = [item[0] for item in sorted_sources]
+            source_values = [item[1] for item in sorted_sources]
+            source_chart = self.create_bar_chart(source_labels, source_values, "Top 5 Download Sources")
+            charts_layout.addWidget(source_chart)
+
+            # Chart 2: Downloads by Month (Line Chart)
+            if len(downloads_by_month) > 1:
+                sorted_months = sorted(downloads_by_month.items())
+                month_labels = [datetime.datetime.strptime(item[0], '%Y-%m').strftime('%b %Y') for item in sorted_months]
+                month_values = [item[1] for item in sorted_months]
+                month_chart = self.create_line_chart(month_labels, month_values, "Downloads Over Time")
+                charts_layout.addWidget(month_chart)
+
+            self.layout.addLayout(charts_layout)
+
+        # --- Animation ---
+        self.setWindowOpacity(0.0)
+
+    def create_stat_label(self, title, value):
+        frame = QFrame()
+        frame.setObjectName("stat_box")
+        layout = QVBoxLayout(frame)
+        title_label = QLabel(title)
+        title_label.setAlignment(Qt.AlignCenter)
+        title_label.setStyleSheet("color: #ccc; font-weight: bold;")
+        value_label = QLabel(value)
+        value_label.setAlignment(Qt.AlignCenter)
+        value_label.setStyleSheet("font-size: 22px; color: #ffeb3b; font-weight: bold;")
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        return frame
+
+    def create_bar_chart(self, labels, values, title):
+        matplotlib.rcParams.update({'font.size': 10, 'text.color': 'white', 'axes.labelcolor': 'white', 'xtick.color': '#ccc', 'ytick.color': '#ccc'})
+        fig = Figure(figsize=(5, 4), dpi=100, facecolor='#23243a')
+        ax = fig.add_subplot(111, facecolor='#20232a')
+        
+        bars = ax.bar(labels, values, color='#009688', zorder=2)
+        ax.set_title(title, color='#00e5ff', fontsize=16, weight='bold')
+        ax.set_ylabel('Number of Downloads')
+        ax.grid(axis='y', color='#444', linestyle='--', linewidth=0.5, zorder=1)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_color('#555')
+        ax.spines['left'].set_color('#555')
+        fig.tight_layout()
+        return FigureCanvas(fig)
+
+    def create_line_chart(self, labels, values, title):
+        matplotlib.rcParams.update({'font.size': 10, 'text.color': 'white', 'axes.labelcolor': 'white', 'xtick.color': '#ccc', 'ytick.color': '#ccc'})
+        fig = Figure(figsize=(5, 4), dpi=100, facecolor='#23243a')
+        ax = fig.add_subplot(111, facecolor='#20232a')
+        
+        ax.plot(labels, values, color='#ff1744', marker='o', zorder=2)
+        ax.fill_between(labels, values, color='#ff1744', alpha=0.2, zorder=1)
+        ax.set_title(title, color='#00e5ff', fontsize=16, weight='bold')
+        ax.set_ylabel('Number of Downloads')
+        ax.grid(axis='y', color='#444', linestyle='--', linewidth=0.5, zorder=1)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_color('#555')
+        ax.spines['left'].set_color('#555')
+        plt = ax.get_figure()
+        plt.autofmt_xdate(rotation=30, ha='right')
+        fig.tight_layout()
+        return FigureCanvas(fig)
+
+    def showEvent(self, event):
+        """Override showEvent to trigger the fade-in animation."""
+        super().showEvent(event)
+        self.anim = QPropertyAnimation(self, b"windowOpacity")
+        self.anim.setDuration(350)
+        self.anim.setStartValue(0.0)
+        self.anim.setEndValue(1.0)
+        self.anim.start()
+
 # Place this with your other class definitions, e.g., after TelegramSettingsDialog
 
 class UpdateCheckerThread(QThread):
@@ -1272,8 +1456,8 @@ class UpdateCheckerThread(QThread):
             download_url = data.get("download_url", "") # The direct download link for the new executable
 
             # Numerically compare versions (e.g., "1.10" > "1.9")
-            current_version = packaging_version.parse(self.current_version_str)
-            latest_version = packaging_version.parse(latest_version_str)
+            current_version = packaging_version.parse(self.current_version_str) # Use packaging for robust comparison
+            latest_version = packaging_version.parse(latest_version_str) # Use packaging for robust comparison
 
             if latest_version > current_version:
                 self.update_available.emit(self.current_version_str, latest_version_str, changelog, github_url, download_url)
@@ -1521,6 +1705,7 @@ class YTDownloader(QWidget):
         self.use_proxy = False
         self.proxy_status = "disconnected"
 
+        self.last_clipboard_url = "" # To avoid re-prompting for the same URL
         # Ensure bg_label is created first
         self.bg_label = QLabel(self)
         self.bg_label.setScaledContents(True)
@@ -1673,8 +1858,8 @@ class YTDownloader(QWidget):
         self.history_btn.setToolTip("Show download history")
         self.history_btn.clicked.connect(self.show_history)
         folder_row.addWidget(self.open_btn)
-        folder_row.addWidget(self.history_btn)
         left_layout.addLayout(folder_row)
+        folder_row.addWidget(self.history_btn)
 
         # Download button
         self.download_btn = QPushButton("Download")
@@ -1945,11 +2130,16 @@ class YTDownloader(QWidget):
         from PyQt5.QtCore import QTimer
         QTimer.singleShot(2000, self.check_for_updates) # Check 2 seconds after launch
 
+        # --- Clipboard Monitoring ---
+        self.clipboard = QApplication.clipboard()
+        self.clipboard.dataChanged.connect(self.on_clipboard_changed)
+
         self.auto_focus()
         self.show()
 
     def check_for_updates(self):
         """Initiates the background check for a new version."""
+        print("[UpdateChecker] Checking for updates...") # Optional but smart for console/log
         self.status.setText("Checking for updates...")
         version_url = "https://raw.githubusercontent.com/rohitt99/yt-downloader/main/version.json"
         self.update_thread = UpdateCheckerThread(APP_VERSION, version_url)
@@ -2616,6 +2806,33 @@ class YTDownloader(QWidget):
         self.url_input.setText(event.mimeData().text())
         self.url_input.setFocus()
 
+    def on_clipboard_changed(self):
+        """
+        Monitors the clipboard for YouTube/Spotify links and prompts the user.
+        """
+        try:
+            clipboard_text = self.clipboard.text().strip()
+            if not clipboard_text or clipboard_text == self.last_clipboard_url:
+                return # Ignore empty clipboard or same URL
+
+            # Check if it's a valid URL we care about
+            is_yt = "youtube.com" in clipboard_text or "youtu.be" in clipboard_text
+            is_spotify = "spotify.com" in clipboard_text
+
+            if is_yt or is_spotify:
+                self.last_clipboard_url = clipboard_text # Store to prevent re-prompting
+
+                # Bring window to front to show the message box
+                self.activateWindow()
+                self.raise_()
+
+                reply = QMessageBox.question(self, "Link Detected", f"A {'YouTube' if is_yt else 'Spotify'} link was found in your clipboard. <br><br><b>{clipboard_text}</b><br><br>Do you want to fetch it for download?", QMessageBox.Yes | QMessageBox.No)
+                if reply == QMessageBox.Yes:
+                    self.url_input.setText(clipboard_text)
+                    self.fetch_qualities()
+        except Exception as e:
+            print(f"[ClipboardMonitor] Error: {e}")
+
     def play_preview(self):
         url = self.url_input.text().strip()
         if url:
@@ -3011,6 +3228,12 @@ if __name__ == '__main__':
     except ImportError:
         print("Required 'packaging' library not found. Please run: pip install packaging")
         sys.exit(1)
+    if MATPLOTLIB_AVAILABLE:
+        try:
+            import matplotlib
+        except ImportError:
+            print("Required 'matplotlib' library not found. Please run: pip install matplotlib")
+            sys.exit(1)
     try:
         import yt_dlp
     except ImportError:
