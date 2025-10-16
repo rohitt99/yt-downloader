@@ -75,9 +75,92 @@
 
 ## ⚡ **Install: One Command To Rule Them All**
 
+## 🚀 Installation
+
+### 1. **Install Python**
+
+- Minimum: Python 3.8+
+- [Download Python](https://www.python.org/downloads/)
+
+### 2. **(Optional) Create a Virtual Environment**
+
+Recommended for isolation:
 ```bash
-pip install pyqt5 yt-dlp spotdl matplotlib packaging browser-cookie3 requests
-# Download ffmpeg: https://ffmpeg.org/download.html (add to PATH)
+python -m venv ytspotifyenv
+# Windows:
+ytspotifyenv\Scripts\activate
+# macOS/Linux:
+source ytspotifyenv/bin/activate
+```
+
+### 3. **Upgrade pip**
+```bash
+python -m pip install --upgrade pip
+```
+
+### 4. **Install Dependencies**
+
+```bash
+pip install pyqt5 yt-dlp spotdl matplotlib packaging browser-cookie3 requests pysocks
+```
+
+### 5. **Install FFmpeg**
+
+- **Windows:**  
+  [Download FFmpeg](https://ffmpeg.org/download.html#build-windows), extract, and add the `bin` folder to your PATH.
+- **macOS:**  
+  ```bash
+  brew install ffmpeg
+  ```
+- **Linux (Debian/Ubuntu):**  
+  ```bash
+  sudo apt update
+  sudo apt install ffmpeg
+  ```
+
+### 6. **(Optional) Install Git**
+
+- **Windows:** [Git Download](https://git-scm.com/download/win)
+- **macOS:**  
+  ```bash
+  brew install git
+  ```
+- **Linux:**  
+  ```bash
+  sudo apt install git
+  ```
+
+### 7. **(Optional) Download Icons & Backgrounds**
+
+Place `icon.png`, `logo.png`, `bg.jpg` (optional) in the project directory for best UI experience.
+
+---
+
+## ⚡ Quick Start
+
+```bash
+python Uidownload.py
+```
+
+---
+
+## 📦 One-Line Setup (Copy-Paste)
+
+```bash
+python -m venv ytspotifyenv
+# Windows:
+ytspotifyenv\Scripts\activate
+# macOS/Linux:
+source ytspotifyenv/bin/activate
+
+python -m pip install --upgrade pip
+pip install pyqt5 yt-dlp spotdl matplotlib packaging browser-cookie3 requests pysocks
+
+# Install FFmpeg
+# Windows: Download and add to PATH from https://ffmpeg.org/
+# macOS: brew install ffmpeg
+# Linux: sudo apt install ffmpeg
+
 python Uidownload.py
 ```
 <p align="center">
