@@ -63,11 +63,11 @@
 ## 🖥️ **Screenshots (Interactive & Animated)**
 
 <p align="center">
-  <img src="https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-02%20213937.png" alt="Main UI Dark" width="700"><br>
-  <img src="https://raw.githubusercontent.com/rohitt99/yt-downloader/main/screenshots/Screenshot%20(1).png" alt="Main UI Light" width="700"><br>
+  <img src="https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-16%20215446.png" alt="Main UI Dark" width="700"><br>
+  <img src="https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-16%20215547.png" alt="Main UI Light" width="700"><br>
   </p>
 
-| ![Playlist UI](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-02%20214009.png) | ![Subtitles](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-02%20214215.png) | ![History](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-02%20214040.png) |
+| ![Playlist UI](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-02%20214009.png) | ![Subtitles](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-16%20220332.png) | ![History](https://github.com/raw.rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-16%20220841.png) |
 |:---:|:---:|:---:|
 | **Playlist Selection** | **Subtitle Picker** | **Download History** |
 
@@ -76,7 +76,7 @@
 ## ⚡ **Install: One Command To Rule Them All**
 
 ```bash
-pip install -U yt-dlp spotdl PyQt5
+pip install pyqt5 yt-dlp spotdl matplotlib packaging browser-cookie3 requests
 # Download ffmpeg: https://ffmpeg.org/download.html (add to PATH)
 python Uidownload.py
 ```
