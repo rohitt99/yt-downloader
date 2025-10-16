@@ -65,8 +65,168 @@ class BrowserSelectDialog(QDialog):
 # --- Global constants ---
 APP_TITLE = "YT & Spotify Downloader"
 APP_COPYRIGHT = "© 2024 Alexx993"
-APP_VERSION = "v1.0"
-HISTORY_FILE = "download_history.json"
+APP_VERSION = "v1.1" # Version bump for new feature
+
+def get_app_data_dir():
+    """Returns the platform-specific, persistent application data directory."""
+    APP_NAME = "YTSpotifyDownloader" # A safe name for a folder
+    if sys.platform == "win32":
+        return os.path.join(os.environ['APPDATA'], APP_NAME)
+    elif sys.platform == "darwin": # macOS
+        return os.path.join(os.path.expanduser('~/Library/Application Support'), APP_NAME)
+    else: # Linux and other Unix-like
+        return os.path.join(os.path.expanduser('~/.config'), APP_NAME)
+
+APP_DATA_DIR = get_app_data_dir()
+os.makedirs(APP_DATA_DIR, exist_ok=True) # Ensure the directory exists on startup
+CONFIG_FILE = os.path.join(APP_DATA_DIR, "config.json")
+HISTORY_FILE = os.path.join(APP_DATA_DIR, "download_history.json")
+
+# --- Configuration Management ---
+def load_config():
+    """Loads configuration from config.json."""
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                pass  # Corrupted file, return default
+    # Default config
+    return {
+        "telegram_bot_token": "",
+        "telegram_chat_id": "",
+        "telegram_notifications_enabled": False,
+        "download_folder": os.path.join(os.path.expanduser("~"), "Downloads")
+    }
+
+def save_config(config):
+    """Saves configuration to config.json."""
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=4)
+
+def send_telegram_notification(entry_data):
+    """Sends a professional, aesthetic, and rich download notification to a Telegram chat."""
+    config = load_config()
+    if not config.get("telegram_notifications_enabled") or not config.get("telegram_bot_token") or not config.get("telegram_chat_id"):
+        print("[Telegram] Notifications disabled or not configured. Skipping.")
+        return
+ 
+    # --- Start of Rewritten Function ---
+    try:
+        data_to_send = {}
+        def escape_html(text):
+            """Escapes characters for Telegram's HTML parser."""
+            if not isinstance(text, str):
+                text = str(text)
+            return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+        # 1. Gather all data safely
+        title = entry_data.get('title', 'N/A')
+        source_url = entry_data.get('url', '')
+        download_type = entry_data.get('type', 'N/A')
+        file_format = entry_data.get('format', '').strip('[]') or 'N/A'
+        download_datetime_iso = entry_data.get('datetime')
+        filepath = entry_data.get('filepath')
+        
+        # Use a more stable jpg thumbnail if available, instead of webp
+        thumbnail_url = entry_data.get('thumbnail', '')
+        thumbnail_url = thumbnail_url.replace('_webp', '').replace('.webp', '.jpg')
+
+        # 2. Process and format the data
+        file_size = "N/A"
+        directory = "N/A"
+        if filepath and os.path.exists(filepath) and os.path.isfile(filepath):
+            file_size = human_size(os.path.getsize(filepath))
+            directory = os.path.dirname(filepath)
+
+        download_date_str = ""
+        if download_datetime_iso:
+            dt_obj = datetime.datetime.fromisoformat(download_datetime_iso)
+            download_date_str = dt_obj.strftime("%d/%m/%Y %I:%M %p")
+
+        # 3. Build the caption with proper HTML escaping for every dynamic part
+        # This is the most critical part to prevent errors.
+        base_caption_len = 350 # Approximate length of the static parts of the caption
+        caption = (
+            f"✨ <b>𝕯𝖔𝖜𝖓𝖑𝖔𝖆𝖉 𝕮𝖔𝖒𝖕𝖑𝖊𝖙𝖊</b> ✨\n\n"
+            f"🎬  <b><i>{escape_html(title)}</i></b>\n\n"
+            f"﹌﹌﹌﹌﹌﹌❀˖°﹌﹌﹌﹌﹌﹌❀˖°﹌﹌﹌﹌﹌﹌❀˖°\n"
+            f"🌸 <b>𝑻𝒀𝑷𝑬</b>: <code>{escape_html(download_type)} ({escape_html(file_format)})</code>\n"
+            f"💞 <b>𝑺𝑰𝒁𝑬</b>: <code>{escape_html(file_size)}</code>\n"
+            f"🪷 <b>𝑫𝑶𝑾𝑵𝑳𝑶𝑨𝑫𝑬𝑫 𝑶𝑵</b>: <code>{escape_html(download_date_str)}</code>\n"
+            f"🌺 <b>𝑺𝑶𝑼𝑹𝑪𝑬</b>: <a href=\"{escape_html(source_url)}\">Click Here</a>\n"
+            f"﹌﹌﹌﹌﹌﹌❀˖°﹌﹌﹌﹌﹌﹌❀˖°﹌﹌﹌﹌﹌﹌❀˖°\n\n"
+            f"🌹  <b>𝐒𝐀𝐕𝐄𝐃 𝐓𝐎</b>:\n<code>{escape_html(directory)}</code>"
+        )
+
+        # Telegram API limit for photo captions is 1024 characters.
+        if len(caption) > 1024:
+            # Truncate the title if the caption is too long
+            overflow = len(caption) - 1024
+            truncated_title = title[:-(overflow + 5)] + "..." # Truncate and add ellipsis
+            caption = (
+                f"✨ <b>Download Complete</b> ✨\n\n"
+                f"🎬  <b><i>{escape_html(truncated_title)}</i></b>\n\n"
+                f"----------------------------------------\n"
+                f"📦  <b>Type</b>: <code>{escape_html(download_type)} ({escape_html(file_format)})</code>\n"
+                f"💾  <b>Size</b>: <code>{escape_html(file_size)}</code>\n"
+                f"🗓  <b>Downloaded On</b>: <code>{escape_html(download_date_str)}</code>\n"
+                f"🔗  <b>Source</b>: <a href=\"{escape_html(source_url)}\">Click Here</a>\n"
+                f"----------------------------------------\n\n"
+                f"📁  <b>Saved To</b>:\n<code>{escape_html(directory)}</code>"
+            )
+
+ 
+        # Use sendPhoto if thumbnail exists, otherwise sendMessage
+        api_method = "sendPhoto" if thumbnail_url and thumbnail_url.startswith('http') else "sendMessage" # Check for valid URL
+        url = f"https://api.telegram.org/bot{config['telegram_bot_token']}/{api_method}"
+     
+        data_to_send = {
+            'chat_id': config['telegram_chat_id'],
+            'parse_mode': 'HTML'
+        }
+        if api_method == 'sendPhoto':
+            data_to_send['photo'] = thumbnail_url
+            data_to_send['caption'] = caption
+        else:
+            data_to_send['text'] = caption
+     
+        # We need to build the request properly to handle the complex caption
+        post_data = urllib.parse.urlencode(data_to_send).encode('utf-8') # This handles all characters correctly
+        req = urllib.request.Request(url, data=post_data, method='POST') # Explicitly POST
+        urllib.request.urlopen(req, timeout=10) # Add a timeout
+
+    except Exception as e:
+        print(f"--- TELEGRAM NOTIFICATION FAILED ---")
+        print(f"Error: {e}")
+        # Check if data_to_send was populated before the error
+        if 'chat_id' in locals().get('data_to_send', {}):
+            failed_data_summary = data_to_send.copy()
+            failed_data_summary.pop('caption', None)
+            failed_data_summary.pop('text', None)
+            print(f"Data sent (summary): {failed_data_summary}")
+        print(f"--- END OF TELEGRAM ERROR ---")
+
+def get_download_type_from_url(url):
+    """Extracts a user-friendly name from a URL (e.g., YouTube, Vimeo, Web)."""
+    try:
+        from urllib.parse import urlparse
+        netloc = urlparse(url).netloc.lower()
+
+        if "youtube.com" in netloc or "youtu.be" in netloc:
+            return "YouTube"
+        if "spotify.com" in netloc:
+            return "Spotify"
+
+        # Remove 'www.' if it exists
+        if netloc.startswith('www.'):
+            netloc = netloc[4:]
+
+        # Get the first part of the domain and capitalize it
+        domain_name = netloc.split('.')[0]
+        return domain_name.capitalize() if domain_name else "Web"
+    except Exception:
+        return "Web"
 
 def human_size(nbytes):
     try:
@@ -267,6 +427,7 @@ class DownloadThread(QThread):
         self.use_vpn = use_vpn
 
     def run(self):
+        start_time = datetime.datetime.now()
         try:
             # Connect VPN if requested (dummy implementation, replace with actual VPN logic)
             if self.use_vpn:
@@ -304,16 +465,21 @@ class DownloadThread(QThread):
                         self.error.emit("No file found in download folder after spotdl run.\nOutput:\n" + all_output)
                         return
                     filename = max(files, key=os.path.getctime)
+                end_time = datetime.datetime.now()
+                duration = end_time - start_time
                 entry = {
                     "title": self.title,
                     "url": self.url,
                     "filepath": filename,
                     "type": "Spotify",
                     "format": "audio",
-                    "datetime": datetime.datetime.now().isoformat(),
+                    "datetime": end_time.isoformat(),
+                    "duration_seconds": duration.total_seconds(),
                     "thumbnail": self.thumbnail_url
                 }
                 save_history(entry)
+                # Send Telegram notification
+                send_telegram_notification(entry)
                 self.finished.emit("Download complete!", filename, entry)
                 return
 
@@ -479,16 +645,23 @@ class DownloadThread(QThread):
                             if self.playlist_mode in ("playlist", "range", "single"):
                                 for file in download_files:
                                     if os.path.exists(file):
+                                        # For playlists, duration should be per-file, not total.
+                                        # We'll pass the total duration for now, but a better implementation would time each file.
+                                        end_time_playlist = datetime.datetime.now()
+                                        duration = end_time_playlist - start_time
                                         entry = {
                                             "title": os.path.splitext(os.path.basename(file))[0],
                                             "url": self.url,
                                             "filepath": file,
-                                            "type": "YouTube",
+                                            "type": get_download_type_from_url(self.url),
                                             "format": self.stream_type,
-                                            "datetime": datetime.datetime.now().isoformat(),
+                                            "datetime": end_time.isoformat(),
+                                            "duration_seconds": duration.total_seconds(), # This is the total time, not per-file
                                             "thumbnail": self.thumbnail_url
                                         }
                                         save_history(entry)
+                                        # Send Telegram notification
+                                        send_telegram_notification(entry)
                                         entries.append(entry)
                                 if entries:
                                     first_file = entries[0]["filepath"]
@@ -498,16 +671,21 @@ class DownloadThread(QThread):
                                         self.error.emit("No file found in download folder after yt-dlp run.\nOutput:\n" + all_output2)
                                         return
                                     first_file = max(files, key=os.path.getctime)
+                                    end_time = datetime.datetime.now()
+                                    duration = end_time - start_time
                                     entry = {
                                         "title": os.path.splitext(os.path.basename(first_file))[0],
                                         "url": self.url,
                                         "filepath": first_file,
-                                        "type": "YouTube",
+                                        "type": get_download_type_from_url(self.url),
                                         "format": self.stream_type,
-                                        "datetime": datetime.datetime.now().isoformat(),
+                                        "datetime": end_time.isoformat(),
+                                        "duration_seconds": duration.total_seconds(),
                                         "thumbnail": self.thumbnail_url
                                     }
                                     save_history(entry)
+                                    # Send Telegram notification
+                                    send_telegram_notification(entry)
                                     entries.append(entry)
                                 self.finished.emit("Download complete!", first_file, {"playlist": True, "entries": entries})
                                 return
@@ -520,16 +698,21 @@ class DownloadThread(QThread):
                             if not os.path.exists(filename):
                                 self.error.emit(f"Download reported complete, but file not found.\nOutput:\n{all_output2}")
                                 return
+                            end_time = datetime.datetime.now()
+                            duration = end_time - start_time
                             entry = {
                                 "title": self.title,
                                 "url": self.url,
                                 "filepath": filename,
-                                "type": "YouTube",
+                                "type": get_download_type_from_url(self.url),
                                 "format": self.stream_type,
-                                "datetime": datetime.datetime.now().isoformat(),
+                                "datetime": end_time.isoformat(),
+                                "duration_seconds": duration.total_seconds(),
                                 "thumbnail": self.thumbnail_url
                             }
                             save_history(entry)
+                            # Send Telegram notification
+                            send_telegram_notification(entry)
                             self.finished.emit("Download complete!", filename, entry)
                             return
                         except Exception as e:
@@ -546,16 +729,22 @@ class DownloadThread(QThread):
             if self.playlist_mode in ("playlist", "range", "single"):
                 for file in download_files:
                     if os.path.exists(file):
+                        # For playlists, duration should be per-file. We'll use total time as an approximation.
+                        end_time_playlist = datetime.datetime.now()
+                        duration = end_time_playlist - start_time
                         entry = {
                             "title": os.path.splitext(os.path.basename(file))[0],
                             "url": self.url,
                             "filepath": file,
-                            "type": "YouTube",
+                            "type": get_download_type_from_url(self.url),
                             "format": self.stream_type,
-                            "datetime": datetime.datetime.now().isoformat(),
+                            "datetime": end_time.isoformat(),
+                            "duration_seconds": duration.total_seconds(), # This is the total time, not per-file
                             "thumbnail": self.thumbnail_url
                         }
                         save_history(entry)
+                        # Send Telegram notification
+                        send_telegram_notification(entry)
                         entries.append(entry)
                 if entries:
                     first_file = entries[0]["filepath"]
@@ -565,16 +754,21 @@ class DownloadThread(QThread):
                         self.error.emit("No file found in download folder after yt-dlp run.\nOutput:\n" + all_output)
                         return
                     first_file = max(files, key=os.path.getctime)
+                    end_time = datetime.datetime.now()
+                    duration = end_time - start_time
                     entry = {
                         "title": os.path.splitext(os.path.basename(first_file))[0],
                         "url": self.url,
                         "filepath": first_file,
-                        "type": "YouTube",
+                        "type": get_download_type_from_url(self.url),
                         "format": self.stream_type,
-                        "datetime": datetime.datetime.now().isoformat(),
+                        "datetime": end_time.isoformat(),
+                        "duration_seconds": duration.total_seconds(),
                         "thumbnail": self.thumbnail_url
                     }
                     save_history(entry)
+                    # Send Telegram notification
+                    send_telegram_notification(entry)
                     entries.append(entry)
                 self.finished.emit("Download complete!", first_file, {"playlist": True, "entries": entries})
                 return
@@ -589,16 +783,21 @@ class DownloadThread(QThread):
                 # Find the most recently modified file. This is our downloaded video.
                 filename = max(all_files, key=os.path.getmtime)
 
+                end_time = datetime.datetime.now()
+                duration = end_time - start_time
                 entry = {
                     "title": self.title,
                     "url": self.url,
                     "filepath": filename,
-                    "type": "YouTube",
+                    "type": get_download_type_from_url(self.url),
                     "format": self.stream_type,
-                    "datetime": datetime.datetime.now().isoformat(),
+                    "datetime": end_time.isoformat(),
+                    "duration_seconds": duration.total_seconds(),
                     "thumbnail": self.thumbnail_url
                 }
                 save_history(entry)
+                # Send Telegram notification
+                send_telegram_notification(entry)
                 self.finished.emit("Download complete!", filename, entry)
             except Exception as e:
                 self.error.emit(f"Error finding downloaded file: {e}\nOutput:\n{all_output}")
@@ -686,47 +885,91 @@ class SubtitleDialog(QDialog):
     def __init__(self, lang_list, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Subtitle Options")
+        self.resize(450, 500) # Set a fixed, reasonable size
         self.setStyleSheet("""
             QDialog {background: #23243a; color: #fff;}
             QCheckBox, QLabel {font-size: 15px;}
             QPushButton {background: #009688; color:#fff; border-radius: 8px; font-size: 13px; padding: 6px 18px;}
+            QLineEdit {
+                border-radius: 8px; border: 1px solid #444; background: #20232a;
+                color: #fff; padding: 8px; font-size: 14px;
+            }
+            QScrollArea { border: 1px solid #444; border-radius: 8px; }
         """)
         self.selected_langs = []
         vbox = QVBoxLayout(self)
+        vbox.setSpacing(10)
+
+        # --- Top Section: Embed Checkbox ---
         self.check_embed = QCheckBox("Embed subtitle(s) into video (if possible)")
         self.check_embed.setChecked(True)
         vbox.addWidget(self.check_embed)
-        # Create a scroll area for subtitle options
+
+        # --- Search Bar ---
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("🔍 Search for a language...")
+        self.search_input.textChanged.connect(self.filter_languages)
+        vbox.addWidget(self.search_input)
+
+        # --- Scroll Area for Languages ---
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea{border:none; background:transparent;}")
-        
-        # Container widget for checkboxes
+        scroll.setStyleSheet("background: #20232a;")
+
         container = QWidget()
         container_layout = QVBoxLayout()
         container.setLayout(container_layout)
-        
-        # Add language checkboxes
+
         self.lang_checks = []
-        container_layout.addWidget(QLabel("Available subtitle languages:"))
         for lang, desc in lang_list:
             cb = QCheckBox(desc)
             cb.lang = lang
             container_layout.addWidget(cb)
             self.lang_checks.append(cb)
-        
+        container_layout.addStretch() # Push checkboxes to the top
+
         scroll.setWidget(container)
-        scroll.setMinimumHeight(300)  # Set reasonable default height
         vbox.addWidget(scroll)
+
+        # --- Selection Buttons ---
+        selection_row = QHBoxLayout()
+        select_all_btn = QPushButton("Select All")
+        deselect_all_btn = QPushButton("Deselect All")
+        select_all_btn.clicked.connect(self.select_all)
+        deselect_all_btn.clicked.connect(self.deselect_all)
+        selection_row.addWidget(select_all_btn)
+        selection_row.addWidget(deselect_all_btn)
+        vbox.addLayout(selection_row)
+
+        # --- Dialog Buttons (OK/Cancel) ---
         btn_row = QHBoxLayout()
         btn_row.addStretch(2)
         ok = QPushButton("OK")
         cancel = QPushButton("Cancel")
         ok.clicked.connect(self.accept)
         cancel.clicked.connect(self.reject)
+        ok.setDefault(True)
         btn_row.addWidget(ok)
         btn_row.addWidget(cancel)
         vbox.addLayout(btn_row)
+
+    def filter_languages(self):
+        """Hides/shows language checkboxes based on search text."""
+        query = self.search_input.text().lower()
+        for cb in self.lang_checks:
+            cb.setVisible(query in cb.text().lower())
+
+    def select_all(self):
+        """Checks all visible language checkboxes."""
+        for cb in self.lang_checks:
+            if cb.isVisible():
+                cb.setChecked(True)
+
+    def deselect_all(self):
+        """Unchecks all visible language checkboxes."""
+        for cb in self.lang_checks:
+            if cb.isVisible():
+                cb.setChecked(False)
 
     def get_selection(self):
         langs = [cb.lang for cb in self.lang_checks if cb.isChecked()]
@@ -739,6 +982,7 @@ class HistoryDialog(QDialog):
         self.setWindowTitle("Download History")
         self.resize(700, 500)
         self.setStyleSheet("""
+            QListWidget::item { padding: 5px; }
             QDialog {background: #23243a; color: #fff;}
             QListWidget {background: #20232a; color: #fff; font-size: 15px; border-radius: 10px;}
             QPushButton {background: #009688; color:#fff; border-radius: 8px; font-size: 13px; padding: 6px 18px;}
@@ -747,7 +991,7 @@ class HistoryDialog(QDialog):
         vbox = QVBoxLayout(self)
         self.list = QListWidget()
         self.list.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.list.setIconSize(QSize(60,60))
+        self.list.setIconSize(QSize(80, 45)) # Standard 16:9 aspect ratio
         vbox.addWidget(self.list)
         btns = QHBoxLayout()
         self.open_btn = QPushButton("Open File")
@@ -774,40 +1018,42 @@ class HistoryDialog(QDialog):
 
     def load_history(self):
         self.list.clear()
+        self.threads = [] # Keep a reference to threads to prevent them from being garbage collected
         self.entries = load_history()
+        
+        # Use a placeholder icon
+        placeholder_icon = QIcon("icon.png") if os.path.exists("icon.png") else QIcon()
+
+        all_items = []
         for entry in self.entries:
             if isinstance(entry, dict) and "entries" in entry and entry.get("playlist"):
-                # playlist history
-                for pl_entry in entry["entries"]:
-                    icon = QIcon()
-                    if pl_entry.get("thumbnail"):
-                        try:
-                            data = urllib.request.urlopen(pl_entry["thumbnail"]).read()
-                            pix = QPixmap()
-                            pix.loadFromData(data)
-                            icon = QIcon(pix)
-                        except Exception:
-                            icon = QIcon()
-                    label = f"{pl_entry['title']}  [{pl_entry['type']}] ({pl_entry['datetime'][:19].replace('T',' ')})"
-                    item = QListWidgetItem(icon, label)
-                    item.setData(Qt.UserRole, pl_entry)
-                    self.list.addItem(item)
+                all_items.extend(entry["entries"])
             else:
-                icon = QIcon()
-                if entry.get("thumbnail"):
-                    try:
-                        data = urllib.request.urlopen(entry["thumbnail"]).read()
-                        pix = QPixmap()
-                        pix.loadFromData(data)
-                        icon = QIcon(pix)
-                    except Exception:
-                        icon = QIcon()
-                label = f"{entry['title']}  [{entry['type']}] ({entry['datetime'][:19].replace('T',' ')})"
-                item = QListWidgetItem(icon, label)
-                item.setData(Qt.UserRole, entry)
-                self.list.addItem(item)
+                all_items.append(entry)
+
+        for i, entry_data in enumerate(all_items):
+            label = f"{entry_data.get('title', 'N/A')}  [{entry_data.get('type', 'N/A')}] ({entry_data.get('datetime', ' ')[0:19].replace('T',' ')})"
+            item = QListWidgetItem(placeholder_icon, label)
+            item.setData(Qt.UserRole, entry_data)
+            self.list.addItem(item)
+
+            # Start a background thread to load the actual thumbnail
+            thumbnail_url = entry_data.get("thumbnail")
+            if thumbnail_url:
+                thread = ThumbnailLoaderThread(thumbnail_url, i)
+                thread.finished.connect(self.on_thumbnail_loaded)
+                self.threads.append(thread)
+                thread.start()
+
         if self.list.count() > 0:
             self.list.setCurrentRow(0)
+
+    def on_thumbnail_loaded(self, pixmap, index):
+        """Slot to update an item's icon when its thumbnail has been downloaded."""
+        if not pixmap.isNull() and index < self.list.count():
+            item = self.list.item(index)
+            if item:
+                item.setIcon(QIcon(pixmap))
 
     def show_details(self, item):
         if not item:
@@ -854,13 +1100,73 @@ class HistoryDialog(QDialog):
             self.load_history()
             self.details.setPlainText("")
 
+class ThumbnailLoaderThread(QThread):
+    """A thread to load a thumbnail image from a URL without blocking the UI."""
+    finished = pyqtSignal(QPixmap, int)
+
+    def __init__(self, url, index, parent=None):
+        super().__init__(parent)
+        self.url = url
+        self.index = index
+
+    def run(self):
+        if not self.url:
+            return
+        try:
+            data = urllib.request.urlopen(self.url, timeout=5).read()
+            pixmap = QPixmap()
+            pixmap.loadFromData(data)
+            self.finished.emit(pixmap, self.index)
+        except Exception as e:
+            print(f"[ThumbnailLoader] Failed to load {self.url}: {e}")
+
+class TelegramSettingsDialog(QDialog):
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Telegram Notification Settings")
+        self.setStyleSheet("""
+            QDialog {background: #23243a; color: #fff;}
+            QLabel {font-size: 15px; margin-bottom: 5px;}
+            QLineEdit {
+                border-radius: 8px; border: 1px solid #444; background: #20232a;
+                color: #fff; padding: 8px; font-size: 14px;
+            }
+            QPushButton {
+                background: #009688; color:#fff; border-radius: 8px;
+                font-size: 13px; padding: 8px 20px;
+            }
+        """)
+        self.config = config
+        layout = QVBoxLayout(self)
+        layout.setSpacing(15)
+
+        layout.addWidget(QLabel("Bot Token:"))
+        self.token_input = QLineEdit(self)
+        self.token_input.setPlaceholderText("Enter your Telegram Bot Token")
+        self.token_input.setText(config.get("telegram_bot_token", ""))
+        layout.addWidget(self.token_input)
+
+        layout.addWidget(QLabel("Chat ID:"))
+        self.chat_id_input = QLineEdit(self)
+        self.chat_id_input.setPlaceholderText("Enter your personal or group Chat ID")
+        self.chat_id_input.setText(config.get("telegram_chat_id", ""))
+        layout.addWidget(self.chat_id_input)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
 class YTDownloader(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
         self.setWindowIcon(QIcon("icon.png") if os.path.exists("icon.png") else QIcon())
         self.resize(1200, 700)
-        self.setMinimumSize(900, 500)
+        self.setMinimumSize(900, 600)
+        self.config = load_config()
+        self.folder = self.config.get("download_folder", os.path.join(os.path.expanduser("~"), "Downloads"))
         self.folder = os.path.join(os.path.expanduser("~"), "Downloads")
         self.setAcceptDrops(True)
         self.theme_dark = True
@@ -1074,6 +1380,24 @@ class YTDownloader(QWidget):
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(32, 32, 32, 32)
         right_layout.setSpacing(18)
+
+        # --- NEW TELEGRAM CONTROLS ---
+        telegram_row = QHBoxLayout()
+        self.telegram_checkbox = QCheckBox("Send History to Telegram")
+        self.telegram_checkbox.setFont(QFont("Segoe UI", 13))
+        self.telegram_checkbox.setChecked(self.config.get("telegram_notifications_enabled", False))
+        self.telegram_checkbox.stateChanged.connect(self.toggle_telegram_notifications)
+        telegram_row.addWidget(self.telegram_checkbox)
+        telegram_row.addStretch()
+        self.telegram_settings_btn = QPushButton("⚙️ Settings")
+        self.telegram_settings_btn.setToolTip("Configure Telegram Bot Token and Chat ID")
+        self.telegram_settings_btn.setObjectName("clear") # Use a subtle style
+        self.telegram_settings_btn.setCursor(Qt.PointingHandCursor)
+        self.telegram_settings_btn.clicked.connect(self.open_telegram_settings)
+        telegram_row.addWidget(self.telegram_settings_btn)
+        right_layout.addLayout(telegram_row)
+        # --- END OF NEW TELEGRAM CONTROLS ---
+
 
         # Add browser selection at the top of right panel
         browser_row = QHBoxLayout()
@@ -1935,6 +2259,7 @@ class YTDownloader(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "Choose Download Folder", self.folder)
         if folder:
             self.folder = folder
+            self.config['download_folder'] = folder
             self.folder_lbl.setText("Download Folder: " + self.folder)
 
     def fetch_qualities(self):
@@ -2246,13 +2571,33 @@ class YTDownloader(QWidget):
             "<li><b>Enter</b>: Fetch Qualities (when input focused)<br>"
             "<li><b>Tab</b>: Next field/button</li></ul>"
             "Powered by <b>yt-dlp</b>, <b>spotdl</b> and <b>PyQt5</b>.<br>"
-            "<br>For issues/feedback, contact <b>Alexx993</b>."
+            "<br>For issues/feedback, contact <b>Rohit</b>."
         )
         QMessageBox.information(self, "About / Help", txt)
 
     def show_history(self):
         dlg = HistoryDialog(self)
         dlg.exec_()
+
+    def toggle_telegram_notifications(self, state):
+        """Saves the state of the Telegram notification checkbox."""
+        self.config["telegram_notifications_enabled"] = bool(state)
+        save_config(self.config)
+        if bool(state) and (not self.config.get("telegram_bot_token") or not self.config.get("telegram_chat_id")):
+            QMessageBox.information(self, "Configuration Needed",
+                                      "Telegram notifications are enabled, but your Bot Token or Chat ID is missing. "
+                                      "Please configure them in the Telegram Settings.")
+            self.open_telegram_settings()
+
+    def open_telegram_settings(self):
+        """Opens the dialog to configure Telegram settings."""
+        dialog = TelegramSettingsDialog(self.config, self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.config["telegram_bot_token"] = dialog.token_input.text().strip()
+            self.config["telegram_chat_id"] = dialog.chat_id_input.text().strip()
+            save_config(self.config)
+            self.status.setText("✅ Telegram settings saved.")
+
 
 if __name__ == '__main__':
     try:
