@@ -2,7 +2,7 @@ import sys, os, subprocess, json, urllib.request, webbrowser, datetime, re
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout,
     QMessageBox, QFileDialog, QHBoxLayout, QProgressBar, QComboBox, QFrame, QSizePolicy,
-    QDialog, QListWidget, QListWidgetItem, QAbstractItemView, QTextEdit, QCheckBox, QSpinBox,
+    QDialog, QListWidget, QListWidgetItem, QAbstractItemView, QTextEdit, QCheckBox, QSpinBox, QGraphicsBlurEffect,
     QScrollArea, QDialogButtonBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QUrl, QCoreApplication, QPropertyAnimation, QRect
@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import QShortcut, QGraphicsDropShadowEffect
 # --- Global constants ---
 APP_TITLE = "YT & Spotify Downloader"
 APP_COPYRIGHT = "© 2025 ROHIT"
-APP_VERSION = "v1.2" # The current version of the application.
+APP_VERSION = "v1.3" # The current version of the application.
 
 try:
     from packaging import version as packaging_version
@@ -302,6 +302,19 @@ def clear_history():
     except Exception:
         pass
 
+def get_language_name(code):
+    lang_names = {
+        'en': 'English', 'es': 'Spanish', 'fr': 'French', 'de': 'German',
+        'it': 'Italian', 'pt': 'Portuguese', 'ru': 'Russian', 'ja': 'Japanese',
+        'ko': 'Korean', 'zh': 'Chinese', 'ar': 'Arabic', 'hi': 'Hindi',
+        'tr': 'Turkish', 'nl': 'Dutch', 'pl': 'Polish', 'vi': 'Vietnamese',
+        'th': 'Thai', 'id': 'Indonesian', 'sv': 'Swedish', 'da': 'Danish',
+        'fi': 'Finnish', 'no': 'Norwegian', 'ro': 'Romanian', 'hu': 'Hungarian',
+        'cs': 'Czech', 'uk': 'Ukrainian', 'el': 'Greek', 'bg': 'Bulgarian',
+        'he': 'Hebrew', 'sk': 'Slovak', 'sr': 'Serbian', 'hr': 'Croatian'
+    }
+    return lang_names.get(code.split('-')[0], code)
+
 def get_subtitle_languages(formats, subtitles, automatic_captions):
     # Check if subtitles are actually available
     if not subtitles and not automatic_captions:
@@ -330,6 +343,7 @@ def get_subtitle_languages(formats, subtitles, automatic_captions):
     if subtitles:
         for lang, subs in subtitles.items():
             name = lang_names.get(lang.split('-')[0], lang)
+            name = get_language_name(lang)
             # Check if subtitle has multiple formats
             formats = [s.get('ext', 'unknown') for s in subs]
             formats_str = f" [{', '.join(set(formats))}]" if formats else ""
@@ -338,19 +352,24 @@ def get_subtitle_languages(formats, subtitles, automatic_captions):
     if automatic_captions:
         for lang, subs in automatic_captions.items():
             name = lang_names.get(lang.split('-')[0], lang)
+            name = get_language_name(lang)
             if not any(l[0] == lang for l in lang_list):  # Avoid duplicates
                 formats = [s.get('ext', 'unknown') for s in subs]
                 formats_str = f" [{', '.join(set(formats))}]" if formats else ""
                 lang_list.append((lang, f"{name} (auto-generated){formats_str}"))
     
     # Sort by manual subs first, then by language name
-    return sorted(lang_list, key=lambda x: (
-        'auto' in x[1],  # Sort manual before auto
-        lang_names.get(x[0].split('-')[0], x[0])  # Then by language name
-    ))
+    return sorted(
+    lang_list,
+    key=lambda x: (
+        'auto' in x[1],  # manual before auto
+        lang_names.get(x[0].split('-')[0], x[0])  # sort by language name
+    )
+)
 
 class FetchFormatsThread(QThread):
     finished = pyqtSignal(list, str, str, str, str, list, dict, dict, bool, list)
+    finished = pyqtSignal(list, str, str, str, str, list, dict, dict, bool, list, list)
     error = pyqtSignal(str)
     def __init__(self, url):
         super().__init__()
@@ -366,6 +385,7 @@ class FetchFormatsThread(QThread):
                 has_playlist = False
                 playlist_entries = []
                 self.finished.emit(qual_list, title, thumbnail, channel, duration, [], {}, {}, has_playlist, playlist_entries)
+                self.finished.emit(qual_list, title, thumbnail, channel, duration, [], {}, {}, has_playlist, playlist_entries, [])
                 return
             cmd = [sys.executable, "-m", "yt_dlp", "--no-warnings", "-J", "--flat-playlist", "--", self.url]
             proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -392,6 +412,16 @@ class FetchFormatsThread(QThread):
             subtitles = info.get("subtitles", {})
             automatic_captions = info.get("automatic_captions", {})
             lang_list = get_subtitle_languages(formats, subtitles, automatic_captions)
+            
+            # Extract audio languages (Dubs)
+            audio_langs = set()
+            for f in formats:
+                if f.get('vcodec') == 'none' and f.get('acodec') != 'none':
+                    lng = f.get('language')
+                    if lng:
+                        audio_langs.add(lng)
+            audio_lang_list = sorted([(l, get_language_name(l)) for l in audio_langs], key=lambda x: x[1])
+
             qual_list = []
             for f in formats:
                 fs = f.get("filesize") or f.get("filesize_approx")
@@ -414,7 +444,7 @@ class FetchFormatsThread(QThread):
             else:
                 self.finished.emit(
                     qual_list, title, thumbnail, channel, duration,
-                    lang_list, subtitles, automatic_captions, has_playlist, playlist_entries
+                    lang_list, subtitles, automatic_captions, has_playlist, playlist_entries, audio_lang_list
                 )
         except Exception as e:
             self.error.emit(f"Error fetching formats: {e}")
@@ -426,7 +456,7 @@ class DownloadThread(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, url, folder, format_id, stream_type, title, thumbnail_url,
-                 embed_subs=False, subtitle_langs=None, playlist_range=None, playlist_mode=None, playlist_total=None, force_aac=False, proxy=None, use_vpn=False):
+                 embed_subs=False, subtitle_langs=None, playlist_range=None, playlist_mode=None, playlist_total=None, force_aac=False, proxy=None, use_vpn=False, trim_args=None):
         super().__init__()
         self.url = url
         self.folder = folder
@@ -442,6 +472,7 @@ class DownloadThread(QThread):
         self.force_aac = force_aac
         self.proxy = proxy
         self.use_vpn = use_vpn
+        self.trim_args = trim_args
         self._is_cancelled = False
         self.process = None
         self.partial_files = set()
@@ -527,15 +558,20 @@ class DownloadThread(QThread):
             fmt_str = self.format_id
             extra_args = []
             is_video = self.stream_type in ("[video+audio]", "[video only]")
+            if is_video:
+                extra_args += ["--audio-multistreams"]
             if is_video and self.thumbnail_url:
                 extra_args += ["--embed-thumbnail"]
             if self.subtitle_langs:
                 lang_codes = ",".join(self.subtitle_langs)
                 extra_args += ["--write-subs", "--sub-langs", lang_codes]
-                if self.embed_subs and self.format_id and any(x in self.format_id for x in ["mp4", "mkv"]):
+                if self.embed_subs:
                     extra_args += ["--embed-subs"]
-                elif self.embed_subs:
-                    print("Warning: Selected format does not support subtitle embedding. Only mp4/mkv support embedding.")
+            
+            if self.trim_args:
+                start, end = self.trim_args
+                extra_args += ["--download-sections", f"*{start}-{end}", "--force-keyframes-at-cuts"]
+
             playlist_args = []
             playlist_count = self.playlist_total if self.playlist_total else 1
             if self.playlist_mode == "playlist":
@@ -1047,6 +1083,64 @@ class SubtitleDialog(QDialog):
         langs = [cb.lang for cb in self.lang_checks if cb.isChecked()]
         embed = self.check_embed.isChecked()
         return embed, langs
+
+class AudioSelectionDialog(QDialog):
+    def __init__(self, lang_list, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Audio Track Options (Dubs)")
+        self.resize(400, 450)
+        self.setStyleSheet("""
+            QDialog {background: #23243a; color: #fff;}
+            QCheckBox, QLabel {font-size: 15px;}
+            QPushButton {background: #009688; color:#fff; border-radius: 8px; font-size: 13px; padding: 6px 18px;}
+            QScrollArea { border: 1px solid #444; border-radius: 8px; }
+        """)
+        vbox = QVBoxLayout(self)
+        vbox.setSpacing(10)
+        
+        vbox.addWidget(QLabel("Select additional audio tracks to download:"))
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("background: #20232a;")
+        
+        container = QWidget()
+        container_layout = QVBoxLayout()
+        container.setLayout(container_layout)
+        
+        self.lang_checks = []
+        for lang, name in lang_list:
+            cb = QCheckBox(f"{name} ({lang})")
+            cb.lang = lang
+            container_layout.addWidget(cb)
+            self.lang_checks.append(cb)
+        container_layout.addStretch()
+        
+        scroll.setWidget(container)
+        vbox.addWidget(scroll)
+
+        # Selection Buttons
+        selection_row = QHBoxLayout()
+        select_all_btn = QPushButton("Select All")
+        deselect_all_btn = QPushButton("Deselect All")
+        select_all_btn.clicked.connect(lambda: [cb.setChecked(True) for cb in self.lang_checks])
+        deselect_all_btn.clicked.connect(lambda: [cb.setChecked(False) for cb in self.lang_checks])
+        selection_row.addWidget(select_all_btn)
+        selection_row.addWidget(deselect_all_btn)
+        vbox.addLayout(selection_row)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(2)
+        ok = QPushButton("OK")
+        cancel = QPushButton("Cancel")
+        ok.clicked.connect(self.accept)
+        cancel.clicked.connect(self.reject)
+        btn_row.addWidget(ok)
+        btn_row.addWidget(cancel)
+        vbox.addLayout(btn_row)
+
+    def get_selection(self):
+        return [cb.lang for cb in self.lang_checks if cb.isChecked()]
 
 class HistoryDialog(QDialog):
     def __init__(self, parent=None):
@@ -1829,6 +1923,28 @@ class YTDownloader(QWidget):
         self.quality_box.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         left_layout.addWidget(self.quality_box)
 
+        # Trim options
+        self.trim_checkbox = QCheckBox("Trim Video")
+        self.trim_checkbox.setFont(QFont("Segoe UI", 13))
+        self.trim_checkbox.toggled.connect(self.toggle_trim)
+        left_layout.addWidget(self.trim_checkbox)
+        
+        self.trim_container = QWidget()
+        self.trim_container.setVisible(False)
+        trim_layout = QHBoxLayout(self.trim_container)
+        trim_layout.setContentsMargins(20, 0, 0, 0)
+
+        self.trim_start = QLineEdit()
+        self.trim_start.setPlaceholderText("Start (e.g. 00:10)")
+        self.trim_end = QLineEdit()
+        self.trim_end.setPlaceholderText("End (e.g. 01:30)")
+        
+        trim_layout.addWidget(QLabel("Start:"))
+        trim_layout.addWidget(self.trim_start)
+        trim_layout.addWidget(QLabel("End:"))
+        trim_layout.addWidget(self.trim_end)
+        left_layout.addWidget(self.trim_container)
+
         # Folder row
         folder_row = QHBoxLayout()
         self.folder_btn = QPushButton("Download Folder")
@@ -1977,12 +2093,23 @@ class YTDownloader(QWidget):
         right_layout.addLayout(browser_row)
 
         # Thumbnail label
-        self.thumbnail_label = QLabel()
+        self.thumbnail_container = QWidget()
+        self.thumbnail_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.thumbnail_container.setStyleSheet("border-radius: 15px;") # Rounded corners for the container
+        thumbnail_container_layout = QVBoxLayout(self.thumbnail_container)
+        thumbnail_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.thumbnail_bg_label = QLabel() # For the blurred background glow
+        self.thumbnail_bg_label.setScaledContents(True)
+        self.thumbnail_bg_label.setStyleSheet("border-radius: 15px;")
+        blur_effect = QGraphicsBlurEffect()
+        blur_effect.setBlurRadius(50) # Adjust for more/less blur
+        self.thumbnail_bg_label.setGraphicsEffect(blur_effect)
+        self.thumbnail_label = QLabel() # For the sharp foreground thumbnail
         self.thumbnail_label.setAlignment(Qt.AlignCenter)
-        self.thumbnail_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.thumbnail_label.setStyleSheet("border-radius: 15px; background: #222;")
-        right_layout.addWidget(self.thumbnail_label, 10)
-        right_layout.addStretch(1)
+        self.thumbnail_label.setStyleSheet("background: transparent; border-radius: 15px;")
+        thumbnail_container_layout.addWidget(self.thumbnail_label)
+        self.thumbnail_bg_label.setParent(self.thumbnail_container)
+        right_layout.addWidget(self.thumbnail_container, 10)
 
         # Playlist options (right panel, below thumbnail)
         playlist_row = QHBoxLayout()
@@ -2003,12 +2130,33 @@ class YTDownloader(QWidget):
         self.subtitle_label.setFont(QFont("Segoe UI", 13))
         self.subtitle_label.setStyleSheet("color:#81d4fa;")
         self.subtitle_btn = QPushButton("Subtitle Options")
+        # Audio and Subtitle options row
+        track_row = QHBoxLayout()
+        
+        self.audio_btn = QPushButton("DUBS")
+        self.audio_btn.setCursor(Qt.PointingHandCursor)
+        self.audio_btn.setEnabled(False)
+        self.audio_btn.setToolTip("Select additional audio tracks (Dubs)")
+        self.audio_btn.clicked.connect(self.select_audio)
+        track_row.addWidget(self.audio_btn)
+
+        self.subtitle_btn = QPushButton("SUBS")
         self.subtitle_btn.setCursor(Qt.PointingHandCursor)
         self.subtitle_btn.setEnabled(False)
+        self.subtitle_btn.setToolTip("Select subtitles")
         self.subtitle_btn.clicked.connect(self.select_subtitle)
         subtitle_row.addWidget(self.subtitle_label)
         subtitle_row.addWidget(self.subtitle_btn)
         right_layout.addLayout(subtitle_row)
+        track_row.addWidget(self.subtitle_btn)
+        
+        right_layout.addLayout(track_row)
+        
+        self.tracks_label = QLabel("")
+        self.tracks_label.setFont(QFont("Segoe UI", 12))
+        self.tracks_label.setStyleSheet("color:#b0bec5;")
+        self.tracks_label.setWordWrap(True)
+        right_layout.addWidget(self.tracks_label)
 
         right_layout.addStretch(1)
 
@@ -2108,6 +2256,8 @@ class YTDownloader(QWidget):
         self.current_formats = []
         self.fetched_title = ""
         self.fetched_thumbnail = ""
+        self.available_audio_langs = []
+        self.selected_audio_langs = []
         self.available_subtitles = []
         self.selected_subtitle_langs = []
         self.embed_subs = False
@@ -2806,6 +2956,9 @@ class YTDownloader(QWidget):
         self.url_input.setText(event.mimeData().text())
         self.url_input.setFocus()
 
+    def toggle_trim(self, checked):
+        self.trim_container.setVisible(checked)
+
     def on_clipboard_changed(self):
         """
         Monitors the clipboard for YouTube/Spotify links and prompts the user.
@@ -2877,11 +3030,16 @@ class YTDownloader(QWidget):
         self.channel_label.setText("")
         self.duration_label.setText("")
         self.progress.setValue(0)
+        self.thumbnail_bg_label.clear()
         self.thumbnail_label.clear()
         self.subtitle_label.setText("")
+        self.tracks_label.setText("")
         self.subtitle_btn.setEnabled(False)
+        self.audio_btn.setEnabled(False)
         self.available_subtitles = []
         self.selected_subtitle_langs = []
+        self.available_audio_langs = []
+        self.selected_audio_langs = []
         self.embed_subs = False
         self.playlist_label.setText("")
         self.playlist_btn.setEnabled(False)
@@ -2896,7 +3054,7 @@ class YTDownloader(QWidget):
         self.fetch_thread.start()
 
     def qualities_fetched(self, qual_list, title, thumbnail_url, channel, duration,
-                         lang_list, subtitles, automatic_captions, has_playlist, playlist_entries):
+                         lang_list, subtitles, automatic_captions, has_playlist, playlist_entries, audio_lang_list):
         self.current_formats = qual_list
         self.fetched_title = title
         self.fetched_thumbnail = thumbnail_url
@@ -2917,9 +3075,14 @@ class YTDownloader(QWidget):
             self.thumbnail_loader_thread.finished.connect(self.on_main_thumbnail_loaded)
             self.thumbnail_loader_thread.start()
         else:
+            self.thumbnail_bg_label.clear()
             self.thumbnail_label.setText("No thumbnail")
 
         self.available_subtitles = lang_list
+        self.available_audio_langs = audio_lang_list
+        
+        status_parts = []
+        
         if lang_list:
             self.subtitle_label.setText(f"✓ Subtitles available ({len(lang_list)}): {', '.join(l for l, _ in lang_list[:3])}" + 
                                       ("..." if len(lang_list) > 3 else ""))
@@ -2933,11 +3096,28 @@ class YTDownloader(QWidget):
             """)
             self.selected_subtitle_langs = []
             self.embed_subs = False
+            status_parts.append(f"{len(lang_list)} Subs")
         else:
             self.subtitle_label.setText("No subtitles available.")
             self.subtitle_btn.setEnabled(False)
             self.selected_subtitle_langs = []
             self.embed_subs = False
+            
+        if audio_lang_list:
+            self.audio_btn.setEnabled(True)
+            status_parts.append(f"{len(audio_lang_list)} Dubs")
+        else:
+            self.audio_btn.setEnabled(False)
+            
+        if status_parts:
+            self.tracks_label.setText("Available: " + ", ".join(status_parts))
+        else:
+            self.tracks_label.setText("No extra tracks available.")
+            
+        self.selected_subtitle_langs = []
+        self.selected_audio_langs = []
+        self.embed_subs = False
+        
         self.has_playlist = has_playlist
         self.playlist_entries = playlist_entries
         self.playlist_total = len(playlist_entries) if has_playlist and playlist_entries else 1
@@ -2956,17 +3136,33 @@ class YTDownloader(QWidget):
     def on_main_thumbnail_loaded(self, pixmap, index):
         """Slot to update the main thumbnail display once it's loaded."""
         if index == -1 and not pixmap.isNull():
-            width = max(220, int(self.width() * 0.28))
-            height = max(120, int(self.height() * 0.33))
-            self.thumbnail_label.setPixmap(pixmap.scaled(
-                width, height, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            # Set the blurred background
+            self.thumbnail_bg_label.setPixmap(pixmap)
+            self.thumbnail_bg_label.setGeometry(self.thumbnail_container.rect())
+            self.thumbnail_bg_label.lower()
+
+            # Set the sharp foreground image, scaled with aspect ratio
+            scaled_pixmap = pixmap.scaled(self.thumbnail_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.thumbnail_label.setPixmap(scaled_pixmap)
         elif pixmap.isNull():
+            self.thumbnail_bg_label.clear()
             self.thumbnail_label.setText("No thumbnail")
 
     def fetch_error(self, err):
         self.status.setText("Fetch error.")
         self.fetch_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", str(err))
+
+    def select_audio(self):
+        if not self.available_audio_langs:
+            return
+        dlg = AudioSelectionDialog(self.available_audio_langs, self)
+        if dlg.exec_() == QDialog.Accepted:
+            self.selected_audio_langs = dlg.get_selection()
+            self.update_tracks_label()
+        else:
+            self.selected_audio_langs = []
+            self.update_tracks_label()
 
     def select_subtitle(self):
         if not self.available_subtitles:
@@ -2994,6 +3190,7 @@ class YTDownloader(QWidget):
                 return
                 
             self.embed_subs = embed and bool(langs)
+            self.selected_subtitle_langs = langs
             fmtid, _ = self.quality_box.currentData() if self.quality_box.currentData() else (None, None)
             if fmtid and not any(x in fmtid for x in ["mp4", "mkv"]):
                 if self.embed_subs:
@@ -3006,8 +3203,26 @@ class YTDownloader(QWidget):
                     self.subtitle_label.setText(f"Will download: {', '.join(langs)} subtitles")
             else:
                 self.subtitle_label.setText("No subtitles selected.")
+            self.update_tracks_label()
         else:
             self.subtitle_label.setText("No subtitles selected.")
+            self.selected_subtitle_langs = []
+            self.embed_subs = False
+            self.update_tracks_label()
+
+    def update_tracks_label(self):
+        parts = []
+        if self.selected_audio_langs:
+            parts.append(f"{len(self.selected_audio_langs)} Audio(s)")
+        if self.selected_subtitle_langs:
+            parts.append(f"{len(self.selected_subtitle_langs)} Sub(s)")
+        
+        if parts:
+            self.tracks_label.setText("Selected: " + ", ".join(parts))
+            self.tracks_label.setStyleSheet("color: #00e5ff; font-weight: bold;")
+        else:
+            self.tracks_label.setText("No extra tracks selected.")
+            self.tracks_label.setStyleSheet("color: #b0bec5;")
 
     def select_playlist(self):
         if not self.has_playlist or not self.playlist_entries:
@@ -3040,6 +3255,21 @@ class YTDownloader(QWidget):
         # Replace It With This New Block
         fmtid, stream_type = self.quality_box.currentData()
 
+        # Construct audio selection string
+        audio_selection = ""
+        if self.selected_audio_langs:
+            # Append selected audio tracks to the download
+            audio_parts = [f"bestaudio[language={lang}]" for lang in self.selected_audio_langs]
+            audio_selection = "+" + "+".join(audio_parts)
+
+        # Trim logic
+        trim_args = None
+        if self.trim_checkbox.isChecked():
+            start = self.trim_start.text().strip()
+            end = self.trim_end.text().strip()
+            if start and end:
+                trim_args = (start, end)
+
         # --- THIS IS THE NEW, SMART LOGIC ---
         # It determines the correct format string for ALL cases.
         final_fmt_str = ""
@@ -3051,9 +3281,11 @@ class YTDownloader(QWidget):
             if match and stream_type != "[audio only]":
                 height = match.group(1)
                 final_fmt_str = f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<={height}]+bestaudio"
+                final_fmt_str = f"bestvideo[height<={height}][ext=mp4]+bestaudio[ext=m4a]{audio_selection}/bestvideo[height<={height}]+bestaudio{audio_selection}"
             elif stream_type != "[audio only]":
             # Fallback for playlists if resolution isn't in the label
                 final_fmt_str = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
+                final_fmt_str = f"bestvideo[ext=mp4]+bestaudio[ext=m4a]{audio_selection}/best"
             else:
         # For audio-only playlists, the original format ID is fine
                 final_fmt_str = fmtid
@@ -3063,9 +3295,11 @@ class YTDownloader(QWidget):
             if stream_type == "[video only]":
                 # If it's video-only, we must add the best audio part, preferring m4a.
                 final_fmt_str = f"{fmtid}+bestaudio[ext=m4a]/bestaudio"
+                final_fmt_str = f"{fmtid}+bestaudio[ext=m4a]{audio_selection}/bestaudio{audio_selection}"
             else:
                 # If it already has audio, just use the ID.
                 final_fmt_str = fmtid
+                final_fmt_str = f"{fmtid}{audio_selection}"
 
         self.progress.setValue(0)
         self.status.setText("Starting download...")
@@ -3087,7 +3321,8 @@ class YTDownloader(QWidget):
                 playlist_total=self.playlist_total,
                 force_aac=False,
                 proxy=None,
-                use_vpn=self.use_vpn
+                use_vpn=self.use_vpn,
+                trim_args=trim_args
             )
             self.thread.progress.connect(self.update_progress)
             self.thread.finished.connect(self.download_finished)
@@ -3160,14 +3395,19 @@ class YTDownloader(QWidget):
         self.title_label.setText("")
         self.channel_label.setText("")
         self.duration_label.setText("")
+        self.thumbnail_bg_label.clear()
         self.thumbnail_label.clear()
         self.subtitle_label.setText("")
+        self.tracks_label.setText("")
         self.subtitle_btn.setEnabled(False)
+        self.audio_btn.setEnabled(False)
         self.playlist_label.setText("")
         self.playlist_btn.setEnabled(False)
         self.status.setText("Ready.")
         self.available_subtitles = []
         self.selected_subtitle_langs = []
+        self.available_audio_langs = []
+        self.selected_audio_langs = []
         self.embed_subs = False
         self.has_playlist = False
         self.playlist_entries = []
