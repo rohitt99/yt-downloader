@@ -1,6 +1,6 @@
 {
-  "version": "1.3",
-  "changelog": "✨ Added a cool new feature.\n🐛 Fixed a critical bug.\n🎨 Improved the UI design. \n❤️ Add option dubbed, subtitles option, also option to directly download with trim option ",
+  "version": "1.4",
+  "changelog": "✨ Added a cool new feature.\n🐛 Fixed a critical bug.\n🎨 Improved the UI design. \n❤️ Improve playlist option, now working spotify downloads, Added send videos/audio direclty to telegram ",
   "url": "https://github.com/rohitt99/yt-downloader/releases/latest"
 }
 
