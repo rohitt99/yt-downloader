@@ -64,7 +64,7 @@
 
 <p align="center">
   <img src="https://raw.github.com/rohitt99/yt-downloader/main/screenshots/new_ui.png" alt="Main UI Dark" width="700"><br>
-  <img src="https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-16%20215547.png" alt="Main UI Light" width="700"><br>
+  <img src="https://raw.github.com/rohitt99/yt-downloader/main/screenshots/new_whiteui.png" alt="Main UI Light" width="700"><br>
   </p>
 
 | ![Playlist UI](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/new_playlist.png) | ![Subtitles](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-16%20220332.png) | ![History](https://raw.github.com/rohitt99/yt-downloader/main/screenshots/Screenshot%202025-10-16%20220841.png) |
