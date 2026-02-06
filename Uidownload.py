@@ -1,19 +1,21 @@
-import sys, os, subprocess, json, urllib.request, webbrowser, datetime, re
+import sys, os, subprocess, json, urllib.request, webbrowser, datetime, re, mimetypes, uuid
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout,
     QMessageBox, QFileDialog, QHBoxLayout, QProgressBar, QComboBox, QFrame, QSizePolicy,
     QDialog, QListWidget, QListWidgetItem, QAbstractItemView, QTextEdit, QCheckBox, QSpinBox, QGraphicsBlurEffect,
-    QScrollArea, QDialogButtonBox
+    QScrollArea, QDialogButtonBox, QTableWidget, QTableWidgetItem, QHeaderView, QAbstractScrollArea
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QUrl, QCoreApplication, QPropertyAnimation, QRect
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize, QUrl, QCoreApplication, QPropertyAnimation, QRect, QRunnable, QThreadPool, QObject
 from PyQt5.QtGui import QIcon, QPixmap, QFont, QColor, QKeySequence
 from PyQt5.QtGui import QDesktopServices 
 from PyQt5.QtWidgets import QShortcut, QGraphicsDropShadowEffect
+import urllib.request # needed for thumbnail loader
+
 
 # --- Global constants ---
 APP_TITLE = "YT & Spotify Downloader"
 APP_COPYRIGHT = "© 2025 ROHIT"
-APP_VERSION = "v1.3" # The current version of the application.
+APP_VERSION = "v1.4" # The current version of the application.
 
 try:
     from packaging import version as packaging_version
@@ -112,6 +114,8 @@ def load_config():
         "telegram_bot_token": "",
         "telegram_chat_id": "",
         "telegram_notifications_enabled": False,
+        "telegram_send_file": False,
+        "telegram_api_url": "https://api.telegram.org",
         "download_folder": os.path.join(os.path.expanduser("~"), "Downloads")
     }
 
@@ -119,6 +123,87 @@ def save_config(config):
     """Saves configuration to config.json."""
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=4)
+
+def upload_file_to_telegram(local_file, config):
+    """
+    Uploads a file to Telegram using multipart/form-data.
+    Adheres to the 50MB Bot API limit (unless local server used).
+    """
+    try:
+        token = config.get("telegram_bot_token")
+        chat_id = config.get("telegram_chat_id")
+        api_base = config.get("telegram_api_url", "https://api.telegram.org").rstrip('/')
+        
+        # FIX: Check if it's a file, not just a path (which could be a directory)
+        if not local_file or not os.path.exists(local_file) or not os.path.isfile(local_file):
+            print(f"[Telegram] Invalid file path: {local_file}")
+            return
+
+        file_size = os.path.getsize(local_file)
+        
+        # Determine Limit
+        # Official API: 50MB for Bots
+        # Local API Server: ~2000MB
+        is_local_server = "api.telegram.org" not in api_base
+        limit_mb = 2000 if is_local_server else 50
+        
+        if file_size > limit_mb * 1024 * 1024:
+            print(f"[Telegram] File too large ({human_size(file_size)}) for upload (limit {limit_mb} MB). Skipping.")
+            return
+
+        print(f"[Telegram] Uploading file: {local_file}...")
+        url = f"{api_base}/bot{token}/sendDocument"
+        boundary = uuid.uuid4().hex
+        
+        content_type, _ = mimetypes.guess_type(local_file)
+        if content_type is None:
+            content_type = 'application/octet-stream'
+
+        part_boundary = f"--{boundary}".encode('utf-8')
+        crlf = b"\r\n"
+        
+        data = []
+        
+        data.append(part_boundary)
+        data.append(crlf)
+        data.append(f'Content-Disposition: form-data; name="chat_id"'.encode('utf-8'))
+        data.append(crlf)
+        data.append(crlf)
+        data.append(str(chat_id).encode('utf-8'))
+        data.append(crlf)
+        
+        filename = os.path.basename(local_file)
+        # Handle non-ascii filenames safely
+        safe_filename = filename.encode('ascii', 'ignore').decode('ascii') or "file.ext"
+
+        data.append(part_boundary)
+        data.append(crlf)
+        data.append(f'Content-Disposition: form-data; name="document"; filename="{safe_filename}"'.encode('utf-8'))
+        data.append(crlf)
+        data.append(f'Content-Type: {content_type}'.encode('utf-8'))
+        data.append(crlf)
+        data.append(crlf)
+        
+        with open(local_file, 'rb') as f:
+            data.append(f.read())
+        
+        data.append(crlf)
+        data.append(f"--{boundary}--".encode('utf-8'))
+        data.append(crlf)
+        
+        body = b"".join(data)
+        
+        req = urllib.request.Request(url, data=body)
+        req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+        req.add_header('Content-Length', len(body))
+        
+        # Increase timeout for file uploads (30 mins for large files if local)
+        timeout = 1800 if is_local_server else 300
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+             print(f"[Telegram] File upload success. Status: {response.getcode()}")
+
+    except Exception as e:
+        print(f"[Telegram] File upload failed: {e}")
 
 def send_telegram_notification(entry_data):
     """Sends a professional, aesthetic, and rich download notification to a Telegram chat."""
@@ -195,7 +280,8 @@ def send_telegram_notification(entry_data):
  
         # Use sendPhoto if thumbnail exists, otherwise sendMessage
         api_method = "sendPhoto" if thumbnail_url and thumbnail_url.startswith('http') else "sendMessage" # Check for valid URL
-        url = f"https://api.telegram.org/bot{config['telegram_bot_token']}/{api_method}"
+        api_base = config.get("telegram_api_url", "https://api.telegram.org").rstrip('/')
+        url = f"{api_base}/bot{config['telegram_bot_token']}/{api_method}"
      
         data_to_send = {
             'chat_id': config['telegram_chat_id'],
@@ -211,6 +297,10 @@ def send_telegram_notification(entry_data):
         post_data = urllib.parse.urlencode(data_to_send).encode('utf-8') # This handles all characters correctly
         req = urllib.request.Request(url, data=post_data, method='POST') # Explicitly POST
         urllib.request.urlopen(req, timeout=10) # Add a timeout
+
+        # Send File if Enabled
+        if config.get("telegram_send_file") and filepath:
+             upload_file_to_telegram(filepath, config)
 
     except Exception as e:
         print(f"--- TELEGRAM NOTIFICATION FAILED ---")
@@ -260,6 +350,11 @@ def is_spotify_url(url):
 
 def is_playlist_url(url):
     return "playlist" in url or "list=" in url
+
+def sanitize_filename(filename):
+    """Removes characters that are invalid in Windows/Linux/macOS filenames."""
+    # Replace invalid characters with an underscore
+    return re.sub(r'[\\/*?:"<>|]', "_", filename)
 
 def save_history(entry):
     try:
@@ -368,7 +463,6 @@ def get_subtitle_languages(formats, subtitles, automatic_captions):
 )
 
 class FetchFormatsThread(QThread):
-    finished = pyqtSignal(list, str, str, str, str, list, dict, dict, bool, list)
     finished = pyqtSignal(list, str, str, str, str, list, dict, dict, bool, list, list)
     error = pyqtSignal(str)
     def __init__(self, url):
@@ -384,7 +478,6 @@ class FetchFormatsThread(QThread):
                 duration = ""
                 has_playlist = False
                 playlist_entries = []
-                self.finished.emit(qual_list, title, thumbnail, channel, duration, [], {}, {}, has_playlist, playlist_entries)
                 self.finished.emit(qual_list, title, thumbnail, channel, duration, [], {}, {}, has_playlist, playlist_entries, [])
                 return
             cmd = [sys.executable, "-m", "yt_dlp", "--no-warnings", "-J", "--flat-playlist", "--", self.url]
@@ -456,7 +549,7 @@ class DownloadThread(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, url, folder, format_id, stream_type, title, thumbnail_url,
-                 embed_subs=False, subtitle_langs=None, playlist_range=None, playlist_mode=None, playlist_total=None, force_aac=False, proxy=None, use_vpn=False, trim_args=None):
+                 embed_subs=False, subtitle_langs=None, playlist_range=None, playlist_mode=None, playlist_total=None, force_aac=False, proxy=None, use_vpn=False, trim_args=None, cookies_from_browser=None, custom_queue=None):
         super().__init__()
         self.url = url
         self.folder = folder
@@ -473,6 +566,8 @@ class DownloadThread(QThread):
         self.proxy = proxy
         self.use_vpn = use_vpn
         self.trim_args = trim_args
+        self.cookies_from_browser = cookies_from_browser
+        self.custom_queue = custom_queue
         self._is_cancelled = False
         self.process = None
         self.partial_files = set()
@@ -486,72 +581,317 @@ class DownloadThread(QThread):
     def run(self):
         start_time = datetime.datetime.now()
         try:
+            # Helper function for parsing progress (moved up for shared use)
+            def parse_progress(line, current_video=None, total_videos=None):
+                percent, speed, eta = None, None, None
+                try:
+                    pct_match = re.search(r'(\d{1,3}(?:\.\d+)?)%', line)
+                    if pct_match: percent = int(float(pct_match.group(1)))
+                    speed_match = re.search(r'at ([\d\.]+[KMG]?i?B/s)', line)
+                    if speed_match: speed = speed_match.group(1)
+                    eta_match = re.search(r'ETA (\d{2}:\d{2}(?::\d{2})?)', line)
+                    if eta_match: eta = eta_match.group(1)
+                except Exception: pass
+                
+                msg_parts = []
+                if current_video and total_videos: msg_parts.append(f"Video {current_video}/{total_videos}")
+                else: msg_parts.append("Downloading...")
+                if percent is not None: msg_parts.append(f"{percent}%")
+                if speed: msg_parts.append(speed)
+                if eta: msg_parts.append(f"ETA {eta}")
+                return percent, " | ".join(msg_parts)
+
+            cookies_file = None
+            if self.cookies_from_browser:
+                try:
+                    print(f"[Info] Attempting to get cookies from {self.cookies_from_browser}...")
+                    cookies_file = get_browser_cookies(self.cookies_from_browser)
+                    print(f"[Info] Successfully got cookies file: {cookies_file}")
+                except Exception as e:
+                    print(f"[Warning] Could not get cookies from {self.cookies_from_browser}: {e}")
+
             if self.use_vpn:
                 print("[INFO] VPN connection requested. Please connect your VPN manually or implement auto-connect here.")
 
-            if is_spotify_url(self.url):
-                outtmpl = os.path.join(self.folder, "{artist} - {title}.{ext}")
-                cmd = [
-                    sys.executable, "-m", "spotdl", "download", self.url,
-                    "--output", outtmpl
-                ]
-                if self.proxy:
-                    cmd += ["--proxy", self.proxy]
-                self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-                percent = 0
-                filename = None
-                all_output = ""
-                for line in self.process.stdout:
-                    all_output += line
-                    if self._is_cancelled:
-                        break
+            if self.custom_queue:
+                success_count = 0
+                results = []
+                total_items = len(self.custom_queue)
+                
+                for idx, item in enumerate(self.custom_queue, 1):
+                    if self._is_cancelled: break
+                    
+                    self.progress.emit(0, f"Processing {idx}/{total_items}: {item['title']}")
+                    
+                    c_url = item['url']
+                    c_fmt = item['format_id']
+                    
+                    # Build Command
+                    outtmpl = os.path.join(self.folder, "%(title)s.%(ext)s")
+                    cmd = [
+                        sys.executable, "-m", "yt_dlp", 
+                        "-f", c_fmt,
+                        "-o", outtmpl, 
+                        "--newline",
+                        "--no-playlist", 
+                        c_url
+                    ]
+                    
+                    if self.proxy: cmd += ["--proxy", self.proxy]
+                    
+                    # Common args
+                    extra_args = ["--merge-output-format", "mp4", "--add-metadata", "--audio-multistreams"]
+                    # Add thumbnail embedding
+                    if item.get('thumbnail') or self.thumbnail_url:
+                        extra_args += ["--embed-thumbnail"]
+                    
+                    if self.subtitle_langs:
+                        lang_codes = ",".join(self.subtitle_langs)
+                        extra_args += ["--write-subs", "--sub-langs", lang_codes]
+                        if self.embed_subs: extra_args += ["--embed-subs"]
+                    
+                    cmd += extra_args
+                    if cookies_file: cmd += ["--cookies", cookies_file]
 
-                    # Find partial files for cleanup
-                    if "%" in line:
-                        match = re.search(r'(\d{1,3}\.\d+)%', line)
-                        if match:
-                            percent = int(float(match.group(1)))
-                            self.progress.emit(percent, f"Downloading... {percent}%")
-                    if "Downloaded:" in line or "Saved:" in line:
-                        part = line.split(":")[-1].strip()
-                        if part and os.path.exists(part):
-                            self.partial_files.add(part)
-                            filename = part # Keep track of the latest potential file
+                    # Execute
+                    self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                    
+                    last_pct = 0
+                    c_filename = None
+                    
+                    for line in iter(self.process.stdout.readline, ''):
+                        if self._is_cancelled: break
+                        
+                        # Parse progress
+                        pct, msg = parse_progress(line, idx, total_items)
+                        if pct is not None: 
+                            last_pct = pct
+                            self.progress.emit(pct, msg)
+                        
+                        # Find filename
+                        if "[Merger] Merging formats into" in line:
+                             m = re.search(r'\[Merger\] Merging formats into "(.+)"', line)
+                             if m: 
+                                 c_filename = m.group(1).strip()
+                                 self.partial_files.add(c_filename)
+                        elif "Destination:" in line:
+                            part = line.split("Destination:")[-1].strip()
+                            if part: 
+                                self.partial_files.add(os.path.join(self.folder, os.path.basename(part)))
 
-                self.process.wait()
+                    self.process.wait()
+                    
+                    if self._is_cancelled: break
+                    
+                    if self.process.returncode == 0:
+                        success_count += 1
+                        # If we didn't capture filename from log (e.g. no merge needed), try to find newest
+                        if not c_filename:
+                             # heuristic: whatever file was modified last in folder
+                             try:
+                                 files = [os.path.join(self.folder, f) for f in os.listdir(self.folder) if os.path.isfile(os.path.join(self.folder, f))]
+                                 if files:
+                                     c_filename = max(files, key=os.path.getmtime)
+                             except: pass
+
+                        entry = {
+                            "title": item['title'],
+                            "url": c_url,
+                            "filepath": c_filename if c_filename else self.folder,
+                            "type": "YouTube",
+                            "format": item.get('quality_label', 'Custom'),
+                            "datetime": datetime.datetime.now().isoformat(),
+                             "thumbnail": item.get('thumbnail', '')
+                        }
+                        results.append(entry)
+                        save_history(entry)
+                        send_telegram_notification(entry)
 
                 if self._is_cancelled:
                     self.cleanup_partial_files()
                     self.cancelled.emit()
                     return
 
-                if self.process.returncode != 0:
-                    self.error.emit("spotdl failed:\n" + all_output)
-                    return
-
-                if not filename:
-                    files = [os.path.join(self.folder, f) for f in os.listdir(self.folder) if f.lower().endswith(('.mp3', '.m4a', '.ogg', '.flac')) and os.path.isfile(os.path.join(self.folder, f))]
-                    if not files:
-                        self.error.emit("No file found in download folder after spotdl run.\nOutput:\n" + all_output)
-                        return
-                    filename = max(files, key=os.path.getctime)
-                end_time = datetime.datetime.now()
-
-                duration = end_time - start_time
-                entry = {
-                    "title": self.title,
-                    "url": self.url,
-                    "filepath": filename,
-                    "type": "Spotify",
-                    "format": "audio",
-                    "datetime": end_time.isoformat(),
-                    "duration_seconds": duration.total_seconds(),
-                    "thumbnail": self.thumbnail_url
-                }
-                save_history(entry)
-                send_telegram_notification(entry)
-                self.finished.emit("Download complete!", filename, entry)
+                self.finished.emit(f"Batch completed: {success_count}/{total_items}", "", {"playlist": True, "entries": results})
                 return
+
+            if is_spotify_url(self.url):
+                # --- METHOD 3: Playlist Support via Spotipy + yt-dlp Search (PRIMARY) ---
+                try:
+                    import spotipy
+                    from spotipy.oauth2 import SpotifyClientCredentials
+                    
+                    # ==========================================
+                    # 🔴 ENTER YOUR CLIENT ID & SECRET HERE 🔴
+                    CLIENT_ID = '15ca3d00f07847c39ce955672ed73176' 
+                    CLIENT_SECRET = '4e836fcd0b3d4bbea37d6672d0c6c689'
+                    # ==========================================
+
+                    self.progress.emit(0, "Connecting to Spotify API...")
+                    
+                    auth_manager = SpotifyClientCredentials(client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
+                    sp = spotipy.Spotify(auth_manager=auth_manager)
+                    
+                    # 2. Identify Link Type & Get Tracks
+                    tracks_to_download = []
+                    
+                    if "track" in self.url:
+                        meta = sp.track(self.url)
+                        artist = meta['artists'][0]['name']
+                        title = meta['name']
+                        tracks_to_download.append(f"{artist} - {title}")
+                        self.title = f"{artist} - {title}"
+                        
+                    elif "playlist" in self.url:
+                        self.progress.emit(0, "Fetching Playlist info...")
+                        if "/playlist/" in self.url:
+                            pl_id = self.url.split("/playlist/")[1].split("?")[0].split("/")[0].strip()
+                        else:
+                            pl_id = self.url.split("/")[-1].split("?")[0].strip()
+                        results = sp.playlist_tracks(pl_id)
+                        playlist_name = sp.playlist(pl_id)['name']
+                        self.title = playlist_name
+                        
+                        for item in results['items']:
+                            track = item['track']
+                            if track:
+                                artist = track['artists'][0]['name']
+                                title = track['name']
+                                tracks_to_download.append(f"{artist} - {title}")
+                                
+                        while results['next']:
+                            results = sp.next(results)
+                            for item in results['items']:
+                                track = item['track']
+                                if track:
+                                    tracks_to_download.append(f"{track['artists'][0]['name']} - {track['name']}")
+
+                    elif "album" in self.url:
+                        self.progress.emit(0, "Fetching Album info...")
+                        if "/album/" in self.url:
+                            alb_id = self.url.split("/album/")[1].split("?")[0].split("/")[0].strip()
+                        else:
+                            alb_id = self.url.split("/")[-1].split("?")[0].strip()
+                        results = sp.album_tracks(alb_id)
+                        album_name = sp.album(alb_id)['name']
+                        self.title = album_name
+                        
+                        for track in results['items']:
+                            artist = track['artists'][0]['name']
+                            title = track['name']
+                            tracks_to_download.append(f"{artist} - {title}")
+
+                    # 3. Loop and Download Each Track
+                    total_tracks = len(tracks_to_download)
+                    downloaded_files = []
+                    
+                    print(f"[Info] Found {total_tracks} tracks to download.")
+                    
+                    for index, search_query in enumerate(tracks_to_download):
+                        if self._is_cancelled:
+                            break
+                            
+                        current_num = index + 1
+                        
+                        # --- Sanitize the search query for the filename ---
+                        sanitized_query = sanitize_filename(search_query)
+
+                        # --- Run yt-dlp for this specific track ---
+                        cmd = [
+                            sys.executable, "-m", "yt_dlp", 
+                            "--no-warnings", 
+                            "-x", "--audio-format", "mp3",
+                            "-o", os.path.join(self.folder, f"{sanitized_query}.%(ext)s"),
+                            f"ytsearch1:{search_query} audio"
+                        ]
+
+                        if cookies_file:
+                            cmd.extend(["--cookies", cookies_file])
+                        
+                        # Use Popen to allow progress updates during download
+                        self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, encoding='utf-8', errors='replace')
+                        
+                        final_filepath_from_log = None
+                        all_output = ""
+                        for line in self.process.stdout:
+                            if self._is_cancelled:
+                                self.process.terminate()
+                                break
+                            
+                            all_output += line
+
+                            # Find final file from log
+                            dest_match = re.search(r'\[ExtractAudio\] Destination: (.*)', line)
+                            if dest_match:
+                                final_filepath_from_log = dest_match.group(1).strip()
+                                self.partial_files.add(final_filepath_from_log)
+                            elif "Destination:" in line:
+                                part_file_match = re.search(r'Destination: (.*\.(?:part|m4a|webm))', line)
+                                if part_file_match:
+                                    self.partial_files.add(part_file_match.group(1).strip())
+
+                            # Parse progress using the helper
+                            pct, msg = parse_progress(line)
+                            if pct is not None:
+                                # Scale percent based on total tracks
+                                # e.g. Track 1/10 at 50% -> Total 5%
+                                # But simpler to just show current track progress
+                                self.progress.emit(pct, f"Track {current_num}/{total_tracks}: {search_query} ({pct}%)")
+                            elif "Destination:" in line and not dest_match:
+                                self.progress.emit(0, f"Track {current_num}/{total_tracks}: Starting...")
+
+                        self.process.wait()
+                        
+                        if self._is_cancelled:
+                            break
+
+                        if self.process.returncode == 0:
+                            found_file = None
+                            if final_filepath_from_log and os.path.exists(final_filepath_from_log):
+                                found_file = final_filepath_from_log
+                            else:
+                                expected_file = os.path.join(self.folder, f"{sanitized_query}.mp3")
+                                if os.path.exists(expected_file):
+                                    found_file = expected_file
+                            
+                            if found_file:
+                                downloaded_files.append(found_file)
+                            else:
+                                print(f"Warning: Could not confirm downloaded file for '{search_query}'. Full log:\n{all_output}")
+                        else:
+                            # Stop on first failure and report error
+                            self.error.emit(f"Failed to download '{search_query}'.\n\nFull Log:\n{all_output}")
+                            return # Exit the thread
+
+                    if self._is_cancelled:
+                        self.cleanup_partial_files()
+                        self.cancelled.emit()
+                        return
+
+                    # 4. Finish Up
+                    if downloaded_files:
+                        final_file = downloaded_files[-1]
+                        entry = {
+                            "title": self.title,
+                            "url": self.url,
+                            "filepath": final_file,
+                            "type": "Spotify Playlist",
+                            "format": "audio",
+                            "datetime": datetime.datetime.now().isoformat(),
+                            "duration_seconds": 0,
+                            "thumbnail": ""
+                        }
+                        save_history(entry)
+                        send_telegram_notification(entry)
+                        self.finished.emit(f"Downloaded {len(downloaded_files)}/{total_tracks} songs!", final_file, entry)
+                        return
+                    else:
+                        self.error.emit("No tracks were downloaded successfully.")
+                        return
+
+                except Exception as e:
+                    self.error.emit(f"Spotify Error: {e}")
+                    return
 
             # --- yt-dlp block ---
             outtmpl = os.path.join(self.folder, "%(title)s.%(ext)s")
@@ -593,44 +933,6 @@ class DownloadThread(QThread):
             if self.proxy:
                 cmd += ["--proxy", self.proxy]
             cmd += extra_args + playlist_args
-
-            def parse_progress(line, current_video=None, total_videos=None):
-                # Robust regex for yt-dlp progress lines
-                # Example: [download]   45.3% of 12.34MiB at 1.23MiB/s ETA 00:15
-                percent, speed, eta = None, None, None
-                try:
-                    # percent
-                    pct_match = re.search(r'(\d{1,3}(?:\.\d+)?)%', line)
-                    if pct_match:
-                        percent = int(float(pct_match.group(1)))
-                    # speed
-                    speed_match = re.search(r'at ([\d\.]+[KMG]?i?B/s)', line)
-                    if speed_match:
-                        speed = speed_match.group(1)
-                    # ETA
-                    eta_match = re.search(r'ETA (\d{2}:\d{2}(?::\d{2})?)', line)
-                    if eta_match:
-                        eta = eta_match.group(1)
-                except Exception:
-                    pass
-                # Compose status string
-                if current_video and total_videos:
-                    msg = f"Video {current_video}/{total_videos}"
-                    if percent is not None:
-                        msg += f" → {percent}%"
-                    if speed:
-                        msg += f" | {speed}"
-                    if eta:
-                        msg += f" | ETA {eta}"
-                else:
-                    msg = "Downloading..."
-                    if percent is not None:
-                        msg += f" {percent}%"
-                    if speed:
-                        msg += f" | Speed: {speed}"
-                    if eta:
-                        msg += f" | Time left: {eta}"
-                return percent, msg
 
             self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
             percent = 0
@@ -989,6 +1291,273 @@ class PlaylistDialog(QDialog):
             return ("single", (idx, idx))
         return ("playlist", None)
 
+class PlaylistThumbnailRunnable(QRunnable):
+    class Signals(QObject):
+        loaded = pyqtSignal(QPixmap, int)
+
+    def __init__(self, url, row):
+        super().__init__()
+        self.url = url
+        self.row = row
+        self.signals = self.Signals()
+
+    def run(self):
+        try:
+            if not self.url: return
+            if self.url.startswith("http"):
+                req = urllib.request.Request(
+                    self.url, 
+                    headers={'User-Agent': 'Mozilla/5.0'}
+                )
+                data = urllib.request.urlopen(req, timeout=5).read()
+                pixmap = QPixmap()
+                pixmap.loadFromData(data)
+                self.signals.loaded.emit(pixmap, self.row)
+        except Exception:
+            pass
+
+class AdvancedPlaylistDialog(QDialog):
+    def __init__(self, playlist_entries, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Advanced Playlist Download")
+        self.resize(1100, 750)
+        self.setStyleSheet("""
+            QDialog {background: #23243a; color: #fff;}
+            QTableWidget {
+                background: #20232a; color: #eee; font-size: 14px; 
+                border: 1px solid #444; gridline-color: #353b48;
+                selection-background-color: #353b48;
+            }
+            QHeaderView::section {
+                background-color: #2d3436; color: #00e5ff; 
+                padding: 8px; border: 1px solid #444; font-weight: bold;
+            }
+            QCheckBox {spacing: 5px;}
+            QCheckBox::indicator {width: 18px; height: 18px;}
+            QComboBox {
+                background: #2d3436; color: #fff; border: 1px solid #555; 
+                border-radius: 4px; padding: 4px; min-width: 120px;
+            }
+            QPushButton {
+                background: #009688; color: #fff; border-radius: 6px; 
+                padding: 8px 16px; font-weight: bold; font-size: 13px;
+            }
+            QPushButton:hover {background: #26a69a;}
+            QLabel {color: #fff;}
+            QLineEdit {
+                border-radius: 6px; border: 1px solid #555; background: #2f3542;
+                color: #fff; padding: 8px; font-size: 14px;
+            }
+        """)
+        
+        self.entries = playlist_entries
+        self.custom_items = [] # Stores result
+        self.layout = QVBoxLayout(self)
+        self.layout.setSpacing(15)
+        self.layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Thread Pool for Thumbnails
+        self.thread_pool = QThreadPool()
+        self.thread_pool.setMaxThreadCount(4) # Limit concurrency
+
+        # --- Top Control Panel ---
+        top_frame = QFrame()
+        top_frame.setObjectName("topPanel")
+        top_frame.setStyleSheet("#topPanel {background: #2d3436; border-radius: 8px; padding: 10px;}")
+        top_layout = QHBoxLayout(top_frame)
+        
+        self.info_lbl = QLabel(f"<b>Found {len(self.entries)} videos</b>")
+        self.info_lbl.setStyleSheet("font-size: 16px; color: #00e5ff;")
+        top_layout.addWidget(self.info_lbl)
+        
+        top_layout.addStretch()
+
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("🔍 Search playlist...")
+        self.search_input.setFixedWidth(250)
+        self.search_input.textChanged.connect(self.filter_table)
+        top_layout.addWidget(self.search_input)
+        
+        top_layout.addWidget(QLabel("Global Quality:"))
+        self.global_quality = QComboBox()
+        # --- FIXED QUALITY OPTIONS TO FORCE MP4 (Video) and M4A (Audio) ---
+        self.quality_options = [
+            ("Best Available (Video+Audio)", "bestvideo+bestaudio/best"),
+            ("4K / 2160p (MP4)", "bestvideo[height<=2160][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=2160]+bestaudio/best"),
+            ("2K / 1440p (MP4)", "bestvideo[height<=1440][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1440]+bestaudio/best"),
+            ("1080p (MP4)", "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best"),
+            ("720p (MP4)", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best"),
+            ("480p (MP4)", "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=480]+bestaudio/best"),
+            ("Audio Only (M4A/Best)", "bestaudio[ext=m4a]/bestaudio/best")
+        ]
+        for label, _ in self.quality_options:
+            self.global_quality.addItem(label)
+        self.global_quality.currentIndexChanged.connect(self.apply_global_quality)
+        top_layout.addWidget(self.global_quality)
+        
+        self.layout.addWidget(top_frame)
+
+        # --- Table ---
+        self.table = QTableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Sel", "Thumbnail", "Video Details", "Quality"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents) # Checkbox
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Fixed) # Thumbnail
+        self.table.setColumnWidth(1, 140)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch) # Title
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents) # Quality
+        self.table.verticalHeader().setDefaultSectionSize(90)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(False)
+        self.table.setFocusPolicy(Qt.NoFocus)
+        
+        self.populate_table()
+        self.layout.addWidget(self.table)
+
+
+        # --- Bottom Buttons ---
+        btn_layout = QHBoxLayout()
+        select_all = QPushButton("Select All")
+        select_all.clicked.connect(self.select_all)
+        deselect_all = QPushButton("Deselect All")
+        deselect_all.clicked.connect(self.deselect_all)
+        
+        btn_layout.addWidget(select_all)
+        btn_layout.addWidget(deselect_all)
+        btn_layout.addStretch()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        cancel_btn.setStyleSheet("background: #546e7a;")
+        
+        download_btn = QPushButton("Start Download 🚀")
+        download_btn.clicked.connect(self.confirm_selection)
+        download_btn.setStyleSheet("background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00e5ff, stop:1 #2979ff); font-size: 15px; padding: 10px 30px;")
+        
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(download_btn)
+        self.layout.addLayout(btn_layout)
+
+    def populate_table(self):
+        self.table.setUpdatesEnabled(False) # Optimization
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(len(self.entries))
+        
+        # Pre-create all items for speed
+        for row, entry in enumerate(self.entries):
+            # Checkbox
+            chk_item = QTableWidgetItem()
+            chk_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            chk_item.setCheckState(Qt.Checked)
+            chk_item.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row, 0, chk_item)
+            
+            # Thumbnail (Placeholder)
+            thumb_lbl = QLabel()
+            thumb_lbl.setFixedSize(130, 74)
+            thumb_lbl.setStyleSheet("background: #000; border-radius: 4px;")
+            thumb_lbl.setAlignment(Qt.AlignCenter)
+            self.table.setCellWidget(row, 1, thumb_lbl)
+            
+            # Load actual thumbnail via Pool
+            t_url = entry.get('thumbnails', [{}])[-1].get('url') if entry.get('thumbnails') else None
+            # Fallback for youtube
+            if not t_url and entry.get('id'):
+                t_url = f"https://i.ytimg.com/vi/{entry['id']}/mqdefault.jpg"
+                
+            if t_url:
+                runnable = PlaylistThumbnailRunnable(t_url, row)
+                runnable.signals.loaded.connect(self.set_thumbnail)
+                self.thread_pool.start(runnable)
+
+            # Title & ID
+            title_str = entry.get('title', 'Unknown')
+            # Store title in item for filtering
+            title_item = QTableWidgetItem(title_str) # Hidden item for sorting/filtering? No, we use custom widget.
+            # We need to set item text for filtering to work easily with findItems, 
+            # OR we implement custom filtering iterating rows. Custom iterating is safer here.
+            
+            title_text = f"<b>{title_str}</b><br><span style='color:#bbb'>ID: {entry.get('id', 'N/A')}</span>"
+            title_lbl = QLabel(title_text)
+            title_lbl.setWordWrap(True)
+            title_lbl.setStyleSheet("padding: 5px;")
+            self.table.setCellWidget(row, 2, title_lbl)
+            
+            # Hidden item in column 2 to hold the plain text title for searching
+            self.table.setItem(row, 2, QTableWidgetItem(title_str)) 
+
+            # Quality Combobox
+            combo = QComboBox()
+            for label, data in self.quality_options:
+                combo.addItem(label, data)
+            self.table.setCellWidget(row, 3, combo)
+
+        self.table.setUpdatesEnabled(True)
+
+    def filter_table(self, text):
+        search_text = text.lower()
+        self.table.setUpdatesEnabled(False)
+        for row in range(self.table.rowCount()):
+            # We stored plain title in the QTableWidgetItem of col 2 (Video Details)
+            item = self.table.item(row, 2)
+            title = item.text().lower() if item else ""
+            if search_text in title:
+                self.table.setRowHidden(row, False)
+            else:
+                self.table.setRowHidden(row, True)
+        self.table.setUpdatesEnabled(True)
+
+    def set_thumbnail(self, pixmap, row):
+        if not pixmap.isNull():
+            lbl = self.table.cellWidget(row, 1)
+            if lbl:
+                scaled = pixmap.scaled(130, 74, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                lbl.setPixmap(scaled)
+    
+    def apply_global_quality(self):
+        target_idx = self.global_quality.currentIndex()
+        for row in range(self.table.rowCount()):
+            chk = self.table.item(row, 0)
+            if chk.checkState() == Qt.Checked:
+                cb = self.table.cellWidget(row, 3)
+                if cb: cb.setCurrentIndex(target_idx)
+
+    def select_all(self):
+        for row in range(self.table.rowCount()):
+            self.table.item(row, 0).setCheckState(Qt.Checked)
+
+    def deselect_all(self):
+        for row in range(self.table.rowCount()):
+            self.table.item(row, 0).setCheckState(Qt.Unchecked)
+
+    def confirm_selection(self):
+        self.custom_items = []
+        for row in range(self.table.rowCount()):
+            if self.table.item(row, 0).checkState() == Qt.Checked:
+                entry = self.entries[row]
+                quality_data = self.table.cellWidget(row, 3).currentData()
+                quality_label = self.table.cellWidget(row, 3).currentText()
+                # Ensure we have a valid URL
+                url = entry.get('url')
+                if not url and entry.get('id'):
+                    url = f"https://www.youtube.com/watch?v={entry.get('id')}"
+                elif not url:
+                    # Skip invalid entries
+                    continue
+
+                self.custom_items.append({
+                    'url': url,
+                    'title': entry.get('title', 'Unknown'),
+                    'format_id': quality_data,
+                    'quality_label': quality_label,
+                    'thumbnail': entry.get('thumbnails', [{}])[-1].get('url') if entry.get('thumbnails') else f"https://i.ytimg.com/vi/{entry.get('id')}/mqdefault.jpg" if entry.get('id') else ""
+                })
+        self.accept()
+
+    def get_selection(self):
+        return self.custom_items
+
 class SubtitleDialog(QDialog):
     def __init__(self, lang_list, parent=None):
         super().__init__(parent)
@@ -1339,6 +1908,7 @@ class TelegramSettingsDialog(QDialog):
                 background: #009688; color:#fff; border-radius: 8px;
                 font-size: 13px; padding: 8px 20px;
             }
+            QCheckBox { color: #fff; font-size: 14px; }
         """)
         self.config = config
         layout = QVBoxLayout(self)
@@ -1355,6 +1925,18 @@ class TelegramSettingsDialog(QDialog):
         self.chat_id_input.setPlaceholderText("Enter your personal or group Chat ID")
         self.chat_id_input.setText(config.get("telegram_chat_id", ""))
         layout.addWidget(self.chat_id_input)
+
+        layout.addWidget(QLabel("Bot API URL (Optional, for Local Server):"))
+        self.api_url_input = QLineEdit(self)
+        self.api_url_input.setPlaceholderText("https://api.telegram.org")
+        self.api_url_input.setText(config.get("telegram_api_url", "https://api.telegram.org"))
+        self.api_url_input.setToolTip("Change this only if you are running a Local Bot API Server for >50MB uploads.")
+        layout.addWidget(self.api_url_input)
+
+        self.send_file_check = QCheckBox("Send downloaded file to Telegram")
+        self.send_file_check.setToolTip("Enable sending the actual video/audio file (Max 50MB msg / 2GB local)")
+        self.send_file_check.setChecked(config.get("telegram_send_file", False))
+        layout.addWidget(self.send_file_check)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -1798,6 +2380,7 @@ class YTDownloader(QWidget):
         self.use_vpn = False
         self.use_proxy = False
         self.proxy_status = "disconnected"
+        self.custom_queue = None
 
         self.last_clipboard_url = "" # To avoid re-prompting for the same URL
         # Ensure bg_label is created first
@@ -3227,22 +3810,18 @@ class YTDownloader(QWidget):
     def select_playlist(self):
         if not self.has_playlist or not self.playlist_entries:
             return
-        dlg = PlaylistDialog(self.playlist_entries, self)
+        
+        # Use Advanced Dialog
+        dlg = AdvancedPlaylistDialog(self.playlist_entries, self)
         if dlg.exec_() == QDialog.Accepted:
-            mode, rng = dlg.get_selection()
-            self.playlist_mode = mode
-            self.playlist_range = rng
-            if mode == "playlist":
-                self.playlist_label.setText(f"Playlist: All {len(self.playlist_entries)} videos")
-                self.playlist_total = len(self.playlist_entries)
-            elif mode == "range":
-                self.playlist_label.setText(f"Playlist: Videos {rng[0]}–{rng[1]}")
-                self.playlist_total = rng[1] - rng[0] + 1
-            elif mode == "single":
-                self.playlist_label.setText(f"Playlist: Video #{rng[0]}")
-                self.playlist_total = 1
+            self.custom_queue = dlg.get_selection()
+            self.playlist_mode = "custom"
+            self.playlist_total = len(self.custom_queue)
+            self.playlist_range = None # Not using index range anymore
+            self.playlist_label.setText(f"Selection: {self.playlist_total} videos")
         else:
-            self.playlist_label.setText(f"Playlist: All {len(self.playlist_entries)} videos")
+            self.custom_queue = None
+            self.playlist_label.setText("Selection Canceled")
             self.playlist_mode = "playlist"
             self.playlist_range = None
             self.playlist_total = len(self.playlist_entries)
@@ -3322,7 +3901,9 @@ class YTDownloader(QWidget):
                 force_aac=False,
                 proxy=None,
                 use_vpn=self.use_vpn,
-                trim_args=trim_args
+                trim_args=trim_args,
+                cookies_from_browser=self.browser_combo.currentText(),
+                custom_queue=self.custom_queue
             )
             self.thread.progress.connect(self.update_progress)
             self.thread.finished.connect(self.download_finished)
@@ -3458,6 +4039,8 @@ class YTDownloader(QWidget):
         if dialog.exec_() == QDialog.Accepted:
             self.config["telegram_bot_token"] = dialog.token_input.text().strip()
             self.config["telegram_chat_id"] = dialog.chat_id_input.text().strip()
+            self.config["telegram_api_url"] = dialog.api_url_input.text().strip()
+            self.config["telegram_send_file"] = dialog.send_file_check.isChecked()
             save_config(self.config)
             self.status.setText("✅ Telegram settings saved.")
 
